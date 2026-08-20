@@ -182,6 +182,12 @@ Release validation includes:
 
 All automated tests are non-destructive and do not authenticate to a tenant.
 
+## Federal cybersecurity discussion
+
+For practitioner discussion about federal cloud, control effectiveness, evidence, incident response, and mission resilience, visit [r/FederalCyber](https://www.reddit.com/r/FederalCyber/).
+
+It is an independent, unofficial community for public-source discussion. Never post CUI, credentials, customer details, active incident data, or nonpublic vulnerabilities.
+
 ## Contributing and security
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing changes. The application must remain a one-file executable script, although tests, workflows, and documentation remain separate.
