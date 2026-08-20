@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline-tests:
+    name: Offline tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify PowerShell runtime
+        shell: pwsh
+        run: |
+          if ($PSVersionTable.PSEdition -ne 'Core') {
+              throw "PowerShell Core is required."
+          }
+          if ($PSVersionTable.PSVersion -lt [version]'7.6.0') {
+              throw "PowerShell 7.6 or later is required. Found $($PSVersionTable.PSVersion)."
+          }
+          $PSVersionTable | Format-List
+
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Install-PSResource -Name Pester -Version 6.1.0 -Repository PSGallery -Scope CurrentUser -TrustRepository -AcceptLicense -Quiet
+          Install-PSResource -Name PSScriptAnalyzer -Version 1.25.0 -Repository PSGallery -Scope CurrentUser -TrustRepository -AcceptLicense -Quiet
+
+      - name: Run built-in offline self-test
+        shell: pwsh
+        run: '& ./M365-IR-Console.ps1 -OfflineSelfTest'
+
+      - name: Run Pester regression suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module Pester -RequiredVersion 6.1.0
+          $result = Invoke-Pester -Path ./tests -Output Detailed -PassThru
+          if ($result.FailedCount -gt 0) {
+              throw "$($result.FailedCount) Pester test(s) failed."
+          }
+
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.25.0
+          $findings = @(Invoke-ScriptAnalyzer -Path ./M365-IR-Console.ps1 -Severity Warning, Error)
+          if ($findings.Count -gt 0) {
+              $findings | Format-Table -Wrap -AutoSize
+              throw "$($findings.Count) PSScriptAnalyzer finding(s) failed the build."
+          }

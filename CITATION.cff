@@ -1,0 +1,13 @@
+cff-version: 1.2.0
+message: "If this software supports your work, please cite it using this metadata."
+title: "M365 Incident Response Console"
+type: software
+authors:
+  - family-names: "Friedler"
+    given-names: "Jeffrey"
+repository-code: "https://github.com/fusiontechstrategies/M365-Incident-Response-Console"
+url: "https://github.com/fusiontechstrategies/M365-Incident-Response-Console"
+version: "5.0.0"
+date-released: "2026-08-20"
+license: MIT
+

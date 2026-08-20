@@ -1,0 +1,63 @@
+name: Bug report
+description: Report reproducible incorrect or unsafe behavior using synthetic data.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, tenant identifiers, customer names, message content, or real case evidence. Report security vulnerabilities through private vulnerability reporting.
+  - type: input
+    id: version
+    attributes:
+      label: Console version
+      placeholder: 5.0.0
+    validations:
+      required: true
+  - type: input
+    id: powershell
+    attributes:
+      label: PowerShell version and operating system
+      placeholder: PowerShell 7.6.4 on Windows 11
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Execution mode
+      options:
+        - Audit
+        - Live
+        - Offline self-test
+        - Preflight
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Use synthetic identities and sanitized output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data-safety confirmation
+      options:
+        - label: I removed credentials, tokens, tenant identifiers, customer names, and real incident data.
+          required: true
+        - label: This is not a vulnerability report that belongs in private vulnerability reporting.
+          required: true
+

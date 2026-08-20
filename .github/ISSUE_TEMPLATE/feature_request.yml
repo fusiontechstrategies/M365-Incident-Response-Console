@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a focused investigation, containment, evidence, or safety improvement.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Operational problem
+      description: Explain the incident-response need, not only the desired interface.
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Proposed workflow
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Audit and Live mode behavior
+      description: Identify read scopes, write scopes, mutation controls, and evidence output.
+    validations:
+      required: true
+  - type: textarea
+    id: limits
+    attributes:
+      label: Service limits and prerequisites
+      description: Include licensing, roles, retention, pagination, and platform dependencies.
+    validations:
+      required: true
+

@@ -1,0 +1,82 @@
+name: Dependency smoke test
+
+on:
+  schedule:
+    - cron: '17 9 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-smoke
+  cancel-in-progress: false
+
+jobs:
+  current-modules:
+    name: Current Microsoft modules
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate and import dependency baselines
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . ./M365-IR-Console.ps1 -NoAutoConnect -SkipPreflight
+
+          $rows = foreach ($entry in $script:IRModuleCatalog.GetEnumerator()) {
+              $name = [string]$entry.Key
+              $required = [version]$entry.Value.MinimumVersion
+              $latest = Find-PSResource -Name $name -Repository PSGallery -Type Module |
+                  Sort-Object Version -Descending |
+                  Select-Object -First 1
+              if ($null -eq $latest) {
+                  throw "PowerShell Gallery did not return $name."
+              }
+              if ([version]$latest.Version -ne $required) {
+                  throw "Dependency baseline drift for $name. Script: $required. Gallery: $($latest.Version)."
+              }
+              Install-PSResource -Name $name -Version $required -Repository PSGallery -Scope CurrentUser -TrustRepository -AcceptLicense -Quiet
+              $loaded = Import-Module -Name $name -RequiredVersion $required -PassThru -Force -ErrorAction Stop |
+                  Sort-Object Version -Descending |
+                  Select-Object -First 1
+              [pscustomobject]@{
+                  Module = $name
+                  Required = $required
+                  Loaded = $loaded.Version
+                  Result = 'Pass'
+              }
+          }
+          $rows | Format-Table -AutoSize
+
+          $commandContracts = [ordered]@{
+              'Revoke-MgUserSignInSession' = 'Microsoft.Graph.Users.Actions'
+              'Remove-MgOauth2PermissionGrant' = 'Microsoft.Graph.Identity.SignIns'
+              'Get-MgServicePrincipal' = 'Microsoft.Graph.Applications'
+              'Get-MgAuditLogSignIn' = 'Microsoft.Graph.Reports'
+              'Get-MgGroupMember' = 'Microsoft.Graph.Groups'
+              'Get-MgDirectoryRoleTemplate' = 'Microsoft.Graph.Identity.DirectoryManagement'
+              'Get-MgUserManagedDevice' = 'Microsoft.Graph.Devices.CorporateManagement'
+              'Remove-MgDeviceManagementManagedDevice' = 'Microsoft.Graph.DeviceManagement'
+              'Connect-MicrosoftTeams' = 'MicrosoftTeams'
+              'Connect-SPOService' = 'Microsoft.Online.SharePoint.PowerShell'
+          }
+          foreach ($contract in $commandContracts.GetEnumerator()) {
+              $command = Get-Command -Name $contract.Key -ErrorAction Stop
+              if ([string]$command.Source -ne [string]$contract.Value) {
+                  throw "$($contract.Key) resolved from $($command.Source), expected $($contract.Value)."
+              }
+          }
+
+          $preflight = Test-IRPreflight
+          if ($preflight.Overall -ne 'Pass') {
+              $preflight.Checks | Format-Table -Wrap -AutoSize
+              throw "Offline preflight returned $($preflight.Overall)."
+          }
+

@@ -1,0 +1,22 @@
+# Editor and operating-system files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Test and analysis output
+TestResults/
+coverage/
+*.tmp
+*.log
+
+# Case data and generated evidence
+M365-IR-Cases/
+Cases/
+*.pcap
+*.pcapng
+*.evtx
+*.etl
+*.zip
+*.7z
+
