@@ -57,6 +57,11 @@
     Keep inherited permissions on newly created case folders. By default, the
     console restricts case evidence to the current user when the platform allows.
 
+.PARAMETER UseDeviceAuthentication
+    Use device-code authentication for Microsoft Graph, Exchange Online, and
+    Microsoft Teams when the installed module supports it. This is useful on
+    headless systems and when an embedded browser cannot be displayed.
+
 .EXAMPLE
     .\M365-IR-Console.ps1
 
@@ -67,7 +72,7 @@
     .\M365-IR-Console.ps1 -OfflineSelfTest
 
 .NOTES
-    Version: 5.0.0
+    Version: 5.0.1
     Target runtime: PowerShell 7.6+
     Tested runtime: PowerShell 7.6.4
     License: MIT
@@ -90,14 +95,15 @@ param(
     [switch]$OfflineSelfTest,
     [switch]$SkipPreflight,
     [switch]$NoAutoConnect,
-    [switch]$PreserveInheritedCasePermissions
+    [switch]$PreserveInheritedCasePermissions,
+    [switch]$UseDeviceAuthentication
 )
 
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'Continue'
 
-$script:IRVersion = [version]'5.0.0'
+$script:IRVersion = [version]'5.0.1'
 $script:IRMinimumPowerShell = [version]'7.6.0'
 $script:IRScriptPath = $PSCommandPath
 $script:IRModuleCatalog = [ordered]@{
@@ -216,6 +222,8 @@ $script:IR = [ordered]@{
     SkipPreflight = $SkipPreflight.IsPresent
     NoAutoConnect = $NoAutoConnect.IsPresent
     PreserveInheritedCasePermissions = $PreserveInheritedCasePermissions.IsPresent
+    UseDeviceAuthentication = $UseDeviceAuthentication.IsPresent
+    GraphBroadConsentAcknowledged = $false
     CasePermissionStatus = 'Not initialized'
     Interactive = $true
 }
@@ -294,7 +302,18 @@ function Get-IRProperty {
     }
 
     if ($InputObject -is [System.Collections.IDictionary]) {
-        if ($InputObject.Contains($Name)) {
+        $containsKeyMethod = $InputObject.PSObject.Methods['ContainsKey']
+        $containsMethod = $InputObject.PSObject.Methods['Contains']
+        $hasKey = if ($null -ne $containsKeyMethod) {
+            $InputObject.ContainsKey($Name)
+        }
+        elseif ($null -ne $containsMethod) {
+            $InputObject.Contains($Name)
+        }
+        else {
+            $Name -in @($InputObject.Keys)
+        }
+        if ($hasKey) {
             return $InputObject[$Name]
         }
         return $Default
@@ -381,7 +400,6 @@ function Protect-IRCaseDirectory {
             throw 'The current Windows security identifier could not be determined.'
         }
         $security = [System.Security.AccessControl.DirectorySecurity]::new()
-        $security.SetOwner($identity)
         $security.SetAccessRuleProtection($true, $false)
         $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
             $identity,
@@ -391,7 +409,10 @@ function Protect-IRCaseDirectory {
             [System.Security.AccessControl.AccessControlType]::Allow
         )
         $null = $security.AddAccessRule($rule)
-        Set-Acl -LiteralPath $resolved -AclObject $security -ErrorAction Stop
+        [System.IO.FileSystemAclExtensions]::SetAccessControl(
+            [System.IO.DirectoryInfo]::new($resolved),
+            $security
+        )
         $script:IR.CasePermissionStatus = "Restricted to current Windows identity $identity"
     }
     else {
@@ -418,7 +439,6 @@ function Protect-IRCaseFile {
             throw 'The current Windows security identifier could not be determined.'
         }
         $security = [System.Security.AccessControl.FileSecurity]::new()
-        $security.SetOwner($identity)
         $security.SetAccessRuleProtection($true, $false)
         $rule = [System.Security.AccessControl.FileSystemAccessRule]::new(
             $identity,
@@ -426,7 +446,10 @@ function Protect-IRCaseFile {
             [System.Security.AccessControl.AccessControlType]::Allow
         )
         $null = $security.AddAccessRule($rule)
-        Set-Acl -LiteralPath $resolved -AclObject $security -ErrorAction Stop
+        [System.IO.FileSystemAclExtensions]::SetAccessControl(
+            [System.IO.FileInfo]::new($resolved),
+            $security
+        )
         return "Restricted to current Windows identity $identity"
     }
 
@@ -1333,6 +1356,31 @@ function Test-IRGraphWriteScope {
     return $Scope -match '(?i)(ReadWrite|\.Write(?:\.|$)|Mail\.Send$|RevokeSessions|PasswordProfile)'
 }
 
+function Test-IRGraphScopeSatisfied {
+    param(
+        [Parameter(Mandatory)][string]$RequestedScope,
+        [AllowEmptyCollection()][string[]]$GrantedScopes = @()
+    )
+
+    if ($RequestedScope -in @($GrantedScopes)) {
+        return $true
+    }
+
+    # Microsoft identity tokens can expose a previously consented write-capable
+    # superset even when this invocation requested only the read permission.
+    # Recognize only the explicit pairs reviewed by the Audit-mode mapper.
+    $reviewedSuperset = @{
+        'User.Read' = 'User.ReadWrite.All'
+        'User.Read.All' = 'User.ReadWrite.All'
+        'Policy.Read.All' = 'Policy.ReadWrite.ConditionalAccess'
+        'DelegatedPermissionGrant.Read.All' = 'DelegatedPermissionGrant.ReadWrite.All'
+        'AppRoleAssignment.Read.All' = 'AppRoleAssignment.ReadWrite.All'
+        'DeviceManagementManagedDevices.Read.All' = 'DeviceManagementManagedDevices.ReadWrite.All'
+    }
+    return $reviewedSuperset.ContainsKey($RequestedScope) -and
+        $reviewedSuperset[$RequestedScope] -in @($GrantedScopes)
+}
+
 function ConvertTo-IRAuditGraphScope {
     param([Parameter(Mandatory)][AllowEmptyCollection()][string[]]$Scopes)
 
@@ -1389,11 +1437,15 @@ function Connect-IRGraph {
         $tenantMismatch = (-not $script:IR.TenantSelectionValidated) -or
             ([guid]::TryParse([string]$script:IR.TenantId, [ref]$configuredTenantIsGuid) -and
              [string]$context.TenantId -ine [string]$script:IR.TenantId)
-        $missingScopes = @($requested | Where-Object { $_ -notin @($context.Scopes) })
+        $missingScopes = @($requested | Where-Object {
+            -not (Test-IRGraphScopeSatisfied -RequestedScope $_ -GrantedScopes @($context.Scopes))
+        })
         $writeScopesInContext = @(if ($auditOnly) {
             $context.Scopes | Where-Object { Test-IRGraphWriteScope -Scope $_ }
         })
-        if ($tenantMismatch -or $missingScopes.Count -gt 0 -or $writeScopesInContext.Count -gt 0) {
+        $refreshBroadAuditContext = $writeScopesInContext.Count -gt 0 -and
+            -not $script:IR.GraphBroadConsentAcknowledged
+        if ($tenantMismatch -or $missingScopes.Count -gt 0 -or $refreshBroadAuditContext) {
             if ($tenantMismatch) {
                 Write-IRWarn "The active Graph context is tenant $($context.TenantId), not $($script:IR.TenantId). Reconnecting."
             }
@@ -1421,14 +1473,29 @@ function Connect-IRGraph {
         if (-not [string]::IsNullOrWhiteSpace($script:IR.TenantId)) {
             $parameters.TenantId = $script:IR.TenantId
         }
+        if ($script:IR.UseDeviceAuthentication) {
+            $parameters.UseDeviceCode = $true
+        }
         Write-IRInfo "Connecting to Microsoft Graph with scope(s): $($requested -join ', ')"
         Connect-MgGraph @parameters | Out-Null
         $context = Get-MgContext -ErrorAction Stop
     }
 
-    $stillMissing = @($requested | Where-Object { $_ -notin @($context.Scopes) })
+    $stillMissing = @($requested | Where-Object {
+        -not (Test-IRGraphScopeSatisfied -RequestedScope $_ -GrantedScopes @($context.Scopes))
+    })
     if ($stillMissing.Count -gt 0) {
         throw "Graph connected, but consent is missing for: $($stillMissing -join ', ')."
+    }
+
+    $remainingWriteScopes = @(if ($auditOnly) {
+        $context.Scopes | Where-Object { Test-IRGraphWriteScope -Scope $_ }
+    })
+    if ($remainingWriteScopes.Count -gt 0) {
+        if (-not $script:IR.GraphBroadConsentAcknowledged) {
+            Write-IRWarn 'The identity platform returned previously consented write-capable Graph scopes even though this Audit-mode connection requested only read scopes. The broader consent is recorded; tenant-changing operations remain blocked by the Audit-mode execution gateway.'
+        }
+        $script:IR.GraphBroadConsentAcknowledged = $true
     }
 
     $script:IR.Connections.Graph = $true
@@ -1456,13 +1523,23 @@ function Connect-IRExchange {
     [CmdletBinding()]
     param()
 
-    # Graph is imported first to avoid Microsoft.Identity.Client assembly clashes.
-    $null = Import-IRModule -Name 'Microsoft.Graph.Authentication'
     $null = Import-IRModule -Name ExchangeOnlineManagement
 
     if (-not (Test-IRExchangeConnected)) {
         Write-IRInfo 'Connecting to Exchange Online...'
-        Connect-ExchangeOnline -ShowBanner:$false -ErrorAction Stop | Out-Null
+        $parameters = @{
+            ShowBanner = $false
+            ErrorAction = 'Stop'
+        }
+        $command = Get-Command Connect-ExchangeOnline -ErrorAction Stop
+        if ($script:IR.UseDeviceAuthentication -and $command.Parameters.ContainsKey('Device')) {
+            $parameters.Device = $true
+        }
+        if (-not [string]::IsNullOrWhiteSpace($script:IR.TargetUpn) -and
+            $command.Parameters.ContainsKey('UserPrincipalName')) {
+            $parameters.UserPrincipalName = $script:IR.TargetUpn
+        }
+        Connect-ExchangeOnline @parameters | Out-Null
     }
     if (-not (Test-IRExchangeConnected)) {
         throw 'Exchange Online did not report a connected REST session.'
@@ -1520,7 +1597,12 @@ function Connect-IRTeamService {
         }
     }
     Write-IRInfo 'Connecting to Microsoft Teams...'
-    Connect-MicrosoftTeams -ErrorAction Stop | Out-Null
+    $parameters = @{ ErrorAction = 'Stop' }
+    $command = Get-Command Connect-MicrosoftTeams -ErrorAction Stop
+    if ($script:IR.UseDeviceAuthentication -and $command.Parameters.ContainsKey('UseDeviceAuthentication')) {
+        $parameters.UseDeviceAuthentication = $true
+    }
+    Connect-MicrosoftTeams @parameters | Out-Null
     $script:IR.Connections.Teams = $true
     Write-IRSuccess 'Microsoft Teams connected.'
 }
@@ -1611,6 +1693,7 @@ function Disconnect-IRService {
         foreach ($key in @($script:IR.Connections.Keys)) {
             $script:IR.Connections[$key] = $false
         }
+        $script:IR.GraphBroadConsentAcknowledged = $false
         Write-IRSuccess 'Service sessions disconnected.'
     }
 }
@@ -1706,20 +1789,23 @@ function Test-IRPreflight {
 
     if ($Online) {
         try {
+            # Connect Exchange first. The current Exchange and Graph module
+            # baselines bundle different MSAL versions, and Exchange-first
+            # loading avoids the known Graph-first assembly collision.
+            Connect-IRExchange
+            & $addCheck 'Exchange authentication' 'Pass' $true 'Connected REST session'
+        }
+        catch {
+            & $addCheck 'Exchange authentication' 'Fail' $true $_.Exception.Message
+        }
+
+        try {
             $null = Connect-IRGraph -Scopes @('User.Read.All') -Modules @('Microsoft.Graph.Users')
             $context = Get-MgContext
             & $addCheck 'Graph authentication' 'Pass' $true "$($context.Account) / $($context.TenantId)"
         }
         catch {
             & $addCheck 'Graph authentication' 'Fail' $true $_.Exception.Message
-        }
-
-        try {
-            Connect-IRExchange
-            & $addCheck 'Exchange authentication' 'Pass' $true 'Connected REST session'
-        }
-        catch {
-            & $addCheck 'Exchange authentication' 'Fail' $true $_.Exception.Message
         }
 
         if ($script:IR.TargetUpn) {
@@ -3190,6 +3276,37 @@ function Get-IRMailboxSnapshot {
     return [pscustomobject]@{ Summary = $summary; InboxRules = @($rules); RawMailbox = $mailbox; RawStatistics = $statistics }
 }
 
+function ConvertTo-IRMailboxFolderIdentity {
+    param(
+        [Parameter(Mandatory)][string]$UserPrincipalName,
+        [AllowEmptyString()][string]$FolderPath,
+        [AllowEmptyString()][string]$ReportedIdentity
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($FolderPath)) {
+        $relative = $FolderPath.Trim().TrimStart('/').Replace('/', '\')
+        # Exchange represents a literal slash in a folder name as U+F8FF in
+        # FolderPath. Restore it for Get-MailboxFolderPermission identities.
+        $relative = $relative.Replace([char]0xF8FF, '/')
+        if ([string]::IsNullOrWhiteSpace($relative)) {
+            return '{0}:\' -f $UserPrincipalName
+        }
+        return '{0}:\{1}' -f $UserPrincipalName, $relative
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($ReportedIdentity)) {
+        if ($ReportedIdentity -match ':\\') {
+            return $ReportedIdentity
+        }
+        $prefix = "$UserPrincipalName\"
+        if ($ReportedIdentity.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return '{0}:\{1}' -f $UserPrincipalName, $ReportedIdentity.Substring($prefix.Length)
+        }
+    }
+
+    throw 'Mailbox folder statistics did not include a usable FolderPath or Identity.'
+}
+
 function Get-IRMailboxPermissionInventory {
     [CmdletBinding()]
     param(
@@ -3243,13 +3360,35 @@ function Get-IRMailboxPermissionInventory {
 
     $folderPermissions = [System.Collections.Generic.List[object]]::new()
     $folderErrors = [System.Collections.Generic.List[object]]::new()
+    $skippedFolders = [System.Collections.Generic.List[object]]::new()
+    $nonQueryableFolderTypes = @(
+        'Root',
+        'Audits',
+        'CalendarLogging',
+        'RecoverableItemsRoot',
+        'RecoverableItemsDeletions',
+        'RecoverableItemsDiscoveryHolds',
+        'RecoverableItemsPurges',
+        'RecoverableItemsSubstrateHolds',
+        'RecoverableItemsVersions'
+    )
     $folderParameters = @{ Identity = $upn; ErrorAction = 'Stop' }
     if (-not $IncludeAllFolders) { $folderParameters.FolderScope = 'Calendar' }
     $folders = @(Get-MailboxFolderStatistics @folderParameters)
     foreach ($folder in $folders) {
-        $identity = [string](Get-IRProperty -InputObject $folder -Name 'Identity')
-        if ([string]::IsNullOrWhiteSpace($identity)) { continue }
+        $reportedIdentity = [string](Get-IRProperty -InputObject $folder -Name 'Identity')
+        $folderPath = [string](Get-IRProperty -InputObject $folder -Name 'FolderPath')
+        $folderType = [string](Get-IRProperty -InputObject $folder -Name 'FolderType')
+        if ($folderType -in $nonQueryableFolderTypes) {
+            $skippedFolders.Add([pscustomobject]@{
+                Folder = $reportedIdentity
+                FolderType = $folderType
+                Reason = 'Exchange does not expose this internal system folder through Get-MailboxFolderPermission.'
+            })
+            continue
+        }
         try {
+            $identity = ConvertTo-IRMailboxFolderIdentity -UserPrincipalName $upn -FolderPath $folderPath -ReportedIdentity $reportedIdentity
             foreach ($permission in @(Get-MailboxFolderPermission -Identity $identity -ErrorAction Stop)) {
                 $trustee = ConvertTo-IRDisplayString -Value (Get-IRProperty -InputObject $permission -Name 'User')
                 if ($trustee -in @('Default', 'Anonymous')) { continue }
@@ -3264,7 +3403,7 @@ function Get-IRMailboxPermissionInventory {
             }
         }
         catch {
-            $folderErrors.Add([pscustomobject]@{ Folder = $identity; Error = $_.Exception.Message })
+            $folderErrors.Add([pscustomobject]@{ Folder = $reportedIdentity; Error = $_.Exception.Message })
         }
     }
 
@@ -3289,10 +3428,12 @@ function Get-IRMailboxPermissionInventory {
         Target = $upn
         Permissions = $all
         FolderErrors = $folderErrors.ToArray()
+        SkippedFolders = $skippedFolders.ToArray()
+        Complete = $folderErrors.Count -eq 0
         Scope = if ($IncludeAllFolders) { 'All mailbox folders' } else { 'Calendar folders plus mailbox-level delegation' }
     }
     $script:IR.Results.MailboxPermissions = $all
-    $null = Add-IRActionLog -Action 'Collect mailbox permissions' -Status Read -Target $upn -Details @{ Permissions = $all.Count; FolderErrors = $folderErrors.Count }
+    $null = Add-IRActionLog -Action 'Collect mailbox permissions' -Status Read -Target $upn -Details @{ Permissions = $all.Count; FolderErrors = $folderErrors.Count; SkippedSystemFolders = $skippedFolders.Count }
     return $result
 }
 
@@ -3476,6 +3617,7 @@ function Export-IRMailboxInvestigation {
         @{ Data = @($snapshot.InboxRules); Name = "InboxRules-$safe"; Format = 'Csv' },
         @{ Data = @($permissions.Permissions); Name = "MailboxPermissions-$safe"; Format = 'Csv' },
         @{ Data = @($permissions.FolderErrors); Name = "MailboxFolderErrors-$safe"; Format = 'Csv' },
+        @{ Data = @($permissions.SkippedFolders); Name = "MailboxSystemFoldersNotQueryable-$safe"; Format = 'Csv' },
         @{ Data = $apps; Name = "MailboxApplications-$safe"; Format = 'Csv' }
     )) {
         if (@($export.Data).Count -eq 0) { continue }
@@ -4826,7 +4968,7 @@ function New-IRCaseReport {
     $null = $builder.AppendLine('<!doctype html><html lang="en"><head><meta charset="utf-8">')
     $null = $builder.AppendLine('<meta name="viewport" content="width=device-width,initial-scale=1">')
     $null = $builder.AppendLine('<title>M365 Incident Response Case Report</title>')
-    $null = $builder.AppendLine('<style>body{font-family:Segoe UI,Arial,sans-serif;margin:2rem;color:#17202a}h1,h2{color:#17365d}table{border-collapse:collapse;width:100%;margin:1rem 0}th,td{border:1px solid #ccd4dc;padding:.45rem;text-align:left;vertical-align:top}th{background:#eaf0f6}.Completed,.Pass{color:#166534}.Failed,.Error{color:#b91c1c}.Partial,.Warning{color:#a16207}code{background:#f1f5f9;padding:.1rem .25rem}small{color:#52606d}</style></head><body>')
+    $null = $builder.AppendLine('<style>body{font-family:Segoe UI,Arial,sans-serif;margin:2rem;color:#17202a;line-height:1.45}h1,h2,h3{color:#17365d}h2{margin-top:2rem;border-bottom:2px solid #d8e1ea;padding-bottom:.25rem}h3{margin-top:1.4rem}.table-wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;margin:1rem 0;font-size:.94rem}th,td{border:1px solid #ccd4dc;padding:.45rem;text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:#eaf0f6}.Completed,.Pass{color:#166534}.Failed,.Error{color:#b91c1c}.Partial,.Warning{color:#a16207}code{background:#f1f5f9;padding:.1rem .25rem;overflow-wrap:anywhere}small{color:#52606d}@media print{body{margin:.45in;font-size:10pt}h2{break-after:avoid}table{break-inside:auto}tr{break-inside:avoid}thead{display:table-header-group}}</style></head><body>')
     $null = $builder.AppendLine('<h1>Microsoft 365 Incident Response Case Report</h1>')
     $null = $builder.AppendLine(('<p><strong>Case:</strong> {0}<br><strong>Target:</strong> {1}<br><strong>Generated UTC:</strong> {2}<br><strong>Tool:</strong> M365-IR-Console {3}<br><strong>Mode:</strong> {4}</p>' -f
         (ConvertTo-IRHtml $script:IR.CaseId), (ConvertTo-IRHtml $script:IR.TargetUpn), [datetime]::UtcNow.ToString('o'), (ConvertTo-IRHtml $script:IR.Version), (ConvertTo-IRHtml $script:IR.Mode)))
@@ -4848,6 +4990,243 @@ function New-IRCaseReport {
     }
     if ($statusRows.Count -eq 0) { $null = $builder.AppendLine('<tr><td colspan="4">No orchestrated collection status was supplied.</td></tr>') }
     $null = $builder.AppendLine('</tbody></table>')
+
+    # Build an investigator-oriented evidence summary from the in-memory
+    # collection results. The raw exports remain the authoritative pivot source;
+    # this section makes the report useful without requiring the analyst to open
+    # every artifact merely to understand scope and priority.
+    $mailboxResult = Get-IRProperty -InputObject $script:IR.Results -Name 'Collection:Mailbox configuration'
+    $messageResult = Get-IRProperty -InputObject $script:IR.Results -Name 'Collection:Message trace'
+    $auditResult = Get-IRProperty -InputObject $script:IR.Results -Name 'Collection:Unified audit log'
+    $identityResult = Get-IRProperty -InputObject $script:IR.Results -Name 'Collection:Identity and sign-ins'
+    $threatResult = Get-IRProperty -InputObject $script:IR.Results -Name 'Collection:Threat and Defender'
+    $deviceResult = Get-IRProperty -InputObject $script:IR.Results -Name 'Collection:Managed devices'
+    $policyResult = Get-IRProperty -InputObject $script:IR.Results -Name 'Collection:Security policies'
+
+    $mailboxSnapshot = Get-IRProperty -InputObject $mailboxResult -Name 'Snapshot'
+    $mailboxSummary = Get-IRProperty -InputObject $mailboxSnapshot -Name 'Summary'
+    $inboxRules = @(Get-IRProperty -InputObject $mailboxSnapshot -Name 'InboxRules' -Default @())
+    $mailboxApplications = @(Get-IRProperty -InputObject $mailboxResult -Name 'Applications' -Default @())
+    $permissionResult = Get-IRProperty -InputObject $mailboxResult -Name 'Permissions'
+    $folderErrors = @(Get-IRProperty -InputObject $permissionResult -Name 'FolderErrors' -Default @())
+    $skippedFolders = @(Get-IRProperty -InputObject $permissionResult -Name 'SkippedFolders' -Default @())
+    $messageRows = @(Get-IRProperty -InputObject $messageResult -Name 'Messages' -Default @())
+    $messageAnalysis = Get-IRProperty -InputObject $messageResult -Name 'Analysis'
+    $auditEvents = @(Get-IRProperty -InputObject $auditResult -Name 'Events' -Default @())
+    $auditFindings = @(Get-IRProperty -InputObject $auditResult -Name 'Findings' -Default @())
+    $defenderRows = @(Get-IRProperty -InputObject $threatResult -Name 'DefenderDetections' -Default @())
+    $threatHeuristics = @(Get-IRProperty -InputObject $threatResult -Name 'Heuristics' -Default @())
+    $identitySets = Get-IRProperty -InputObject $identityResult -Name 'DataSets'
+    $oauthGrants = @(Get-IRProperty -InputObject $identitySets -Name 'OAuthGrants' -Default @())
+    $appRoleAssignments = @(Get-IRProperty -InputObject $identitySets -Name 'AppRoleAssignments' -Default @())
+    $signIns = @(Get-IRProperty -InputObject $identitySets -Name 'SignIns' -Default @())
+    $authenticationMethods = @(Get-IRProperty -InputObject $identitySets -Name 'AuthenticationMethods' -Default @())
+    $riskyUsers = @(Get-IRProperty -InputObject $identitySets -Name 'RiskyUser' -Default @())
+    $identityErrors = @(Get-IRProperty -InputObject $identityResult -Name 'Errors' -Default @())
+    $exchangeDevices = @(Get-IRProperty -InputObject $deviceResult -Name 'ExchangeDevices' -Default @())
+    $intuneDevices = @(Get-IRProperty -InputObject $deviceResult -Name 'IntuneDevices' -Default @())
+    $deviceErrors = @(Get-IRProperty -InputObject $deviceResult -Name 'Errors' -Default @())
+    $policySnapshot = Get-IRProperty -InputObject $policyResult -Name 'Snapshot'
+    $policyStatus = @(Get-IRProperty -InputObject $policySnapshot -Name 'Status' -Default @())
+
+    $null = $builder.AppendLine('<h2>Investigator summary</h2>')
+    $null = $builder.AppendLine('<table><thead><tr><th>Evidence area</th><th>Observed result</th><th>Investigator significance</th></tr></thead><tbody>')
+    $summaryRows = @(
+        @('Message trace', "$($messageRows.Count) rows; $([int](Get-IRProperty -InputObject $messageAnalysis -Name 'SentRows' -Default 0)) sent; $([int](Get-IRProperty -InputObject $messageAnalysis -Name 'ReceivedRows' -Default 0)) received; $(@(Get-IRProperty -InputObject $messageAnalysis -Name 'Anomalies' -Default @()).Count) heuristic leads", 'Pivot by message and trace identifiers; validate external, large, repeated-subject, and after-hours leads.'),
+        @('Unified audit', "$($auditEvents.Count) events; $($auditFindings.Count) triage indicators", 'Correlate high-risk, partial, deletion, and after-hours operations with known activity.'),
+        @('Defender mail detail', "$($defenderRows.Count) rows; $($threatHeuristics.Count) additional message leads", 'Review verdict, delivery location, remediation, and user interaction.'),
+        @('Mailbox configuration', "$($inboxRules.Count) rules; $($mailboxApplications.Count) applications; $($folderErrors.Count) folder errors; $($skippedFolders.Count) service-internal exclusions", 'Validate forwarding, delegation, hidden rules, applications, and permissions.'),
+        @('Identity and applications', "$($oauthGrants.Count) OAuth grants; $($appRoleAssignments.Count) app-role assignments; $($signIns.Count) sign-ins; $($authenticationMethods.Count) authentication methods; $($riskyUsers.Count) risk-status records; $($identityErrors.Count) coverage errors", 'Validate consent provenance, least privilege, authentication outcomes, registered methods, risk state, and missing evidence.'),
+        @('Devices', "$($exchangeDevices.Count) Exchange devices; $($intuneDevices.Count) Intune devices; $($deviceErrors.Count) coverage errors", 'Confirm ownership, access state, management, and stale partnerships.'),
+        @('Security policies', "$(@($policyStatus | Where-Object Status -eq 'Collected').Count) collected; $(@($policyStatus | Where-Object Status -ne 'Collected').Count) unavailable or failed", 'Assess effective precedence and record license/role/service limitations.')
+    )
+    foreach ($row in $summaryRows) {
+        $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f (ConvertTo-IRHtml $row[0]), (ConvertTo-IRHtml $row[1]), (ConvertTo-IRHtml $row[2])))
+    }
+    $null = $builder.AppendLine('</tbody></table>')
+
+    if ($mailboxSummary) {
+        $delegates = ConvertTo-IRDisplayString -Value (Get-IRProperty -InputObject $mailboxSummary -Name 'GrantSendOnBehalfTo')
+        $null = $builder.AppendLine('<h2>Mailbox controls and persistence review</h2>')
+        $null = $builder.AppendLine('<table><thead><tr><th>Control</th><th>Observed value</th><th>Required validation</th></tr></thead><tbody>')
+        foreach ($row in @(
+            @('Mailbox forwarding', $(if ([bool](Get-IRProperty -InputObject $mailboxSummary -Name 'HasForwarding' -Default $false)) { "Enabled: $(Get-IRProperty -InputObject $mailboxSummary -Name 'ForwardingSmtpAddress')" } else { 'Not configured' }), 'Confirm destination, authorization, and change history.'),
+            @('Deliver and forward', [string](Get-IRProperty -InputObject $mailboxSummary -Name 'DeliverToMailboxAndForward'), 'Confirm expected routing behavior.'),
+            @('Send-on-Behalf delegates', $delegates, 'Confirm every delegate and business owner.'),
+            @('Mailbox audit enabled', [string](Get-IRProperty -InputObject $mailboxSummary -Name 'AuditEnabled'), 'Confirm audit set and retention.'),
+            @('Litigation hold', [string](Get-IRProperty -InputObject $mailboxSummary -Name 'LitigationHoldEnabled'), 'Record preservation impact.'),
+            @('Single item recovery', [string](Get-IRProperty -InputObject $mailboxSummary -Name 'SingleItemRecoveryEnabled'), 'Record recovery impact.'),
+            @('Mailbox population', "$(Get-IRProperty -InputObject $mailboxSummary -Name 'ItemCount') items; $(Get-IRProperty -InputObject $mailboxSummary -Name 'TotalItemSize')", 'Use as deletion and collection-scope context.')
+        )) {
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f (ConvertTo-IRHtml $row[0]), (ConvertTo-IRHtml $row[1]), (ConvertTo-IRHtml $row[2])))
+        }
+        $null = $builder.AppendLine('</tbody></table>')
+
+        $null = $builder.AppendLine('<h3>Inbox rules</h3><table><thead><tr><th>Name</th><th>Enabled</th><th>Risk</th><th>Reasons</th><th>Forward / redirect</th><th>Move / delete / mark read</th></tr></thead><tbody>')
+        foreach ($rule in $inboxRules) {
+            $forwarding = @((Get-IRProperty -InputObject $rule -Name 'ForwardTo'), (Get-IRProperty -InputObject $rule -Name 'RedirectTo'), (Get-IRProperty -InputObject $rule -Name 'ForwardAsAttachmentTo')) | Where-Object { $_ }
+            $otherActions = @()
+            if (Get-IRProperty -InputObject $rule -Name 'MoveToFolder') { $otherActions += "Move: $(Get-IRProperty -InputObject $rule -Name 'MoveToFolder')" }
+            if ([bool](Get-IRProperty -InputObject $rule -Name 'DeleteMessage' -Default $false)) { $otherActions += 'Delete' }
+            if ([bool](Get-IRProperty -InputObject $rule -Name 'MarkAsRead' -Default $false)) { $otherActions += 'Mark as read' }
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td></tr>' -f
+                (ConvertTo-IRHtml (Get-IRProperty -InputObject $rule -Name 'Name')),
+                (ConvertTo-IRHtml (Get-IRProperty -InputObject $rule -Name 'Enabled')),
+                (ConvertTo-IRHtml (Get-IRProperty -InputObject $rule -Name 'Risk')),
+                (ConvertTo-IRHtml (Get-IRProperty -InputObject $rule -Name 'Reasons')),
+                (ConvertTo-IRHtml ($forwarding -join ' | ')),
+                (ConvertTo-IRHtml ($otherActions -join ' | '))))
+        }
+        if ($inboxRules.Count -eq 0) { $null = $builder.AppendLine('<tr><td colspan="6">No inbox rules returned.</td></tr>') }
+        $null = $builder.AppendLine('</tbody></table>')
+    }
+
+    if ($messageRows.Count -gt 0) {
+        $null = $builder.AppendLine('<h2>Message-flow analysis</h2>')
+        $null = $builder.AppendLine('<h3>Disposition</h3><table><thead><tr><th>Status</th><th>Rows</th><th>Share</th></tr></thead><tbody>')
+        foreach ($group in @($messageRows | Group-Object Status | Sort-Object Count -Descending)) {
+            $share = if ($messageRows.Count -gt 0) { '{0:N1}%' -f (($group.Count / $messageRows.Count) * 100) } else { '0.0%' }
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f (ConvertTo-IRHtml $group.Name), $group.Count, $share))
+        }
+        $null = $builder.AppendLine('</tbody></table>')
+
+        $anomalies = @(Get-IRProperty -InputObject $messageAnalysis -Name 'Anomalies' -Default @())
+        $null = $builder.AppendLine('<h3>Message heuristic work queue</h3><table><thead><tr><th>Type</th><th>Severity</th><th>Rows</th><th>Detail</th></tr></thead><tbody>')
+        foreach ($item in $anomalies) {
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td></tr>' -f
+                (ConvertTo-IRHtml (Get-IRProperty -InputObject $item -Name 'Type')),
+                (ConvertTo-IRHtml (Get-IRProperty -InputObject $item -Name 'Severity')),
+                (ConvertTo-IRHtml (Get-IRProperty -InputObject $item -Name 'Count')),
+                (ConvertTo-IRHtml (Get-IRProperty -InputObject $item -Name 'Detail'))))
+        }
+        if ($anomalies.Count -eq 0) { $null = $builder.AppendLine('<tr><td colspan="4">No message heuristics returned.</td></tr>') }
+        $null = $builder.AppendLine('</tbody></table>')
+    }
+
+    if ($auditEvents.Count -gt 0) {
+        $null = $builder.AppendLine('<h2>Unified-audit analysis</h2>')
+        $null = $builder.AppendLine('<h3>Highest-volume operations</h3><table><thead><tr><th>Operation</th><th>Rows</th><th>Share</th></tr></thead><tbody>')
+        foreach ($group in @($auditEvents | Group-Object Operation | Sort-Object Count -Descending | Select-Object -First 25)) {
+            $share = '{0:N1}%' -f (($group.Count / $auditEvents.Count) * 100)
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f (ConvertTo-IRHtml $group.Name), $group.Count, $share))
+        }
+        $null = $builder.AppendLine('</tbody></table>')
+
+        $null = $builder.AppendLine('<h3>Triage findings</h3><table><thead><tr><th>Severity</th><th>Operation</th><th>UTC</th><th>Source IP</th><th>Object</th><th>Reasons</th></tr></thead><tbody>')
+        foreach ($finding in @($auditFindings | Sort-Object @{ Expression = { switch ($_.Severity) { 'High' { 1 }; 'Medium' { 2 }; default { 3 } } } }, CreationUtc | Select-Object -First 250)) {
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td></tr>' -f
+                (ConvertTo-IRHtml $finding.Severity), (ConvertTo-IRHtml $finding.Operation), (ConvertTo-IRHtml $finding.CreationUtc),
+                (ConvertTo-IRHtml $finding.ClientIP), (ConvertTo-IRHtml $finding.ObjectId), (ConvertTo-IRHtml $finding.Reasons)))
+        }
+        if ($auditFindings.Count -gt 250) { $null = $builder.AppendLine(('<tr><td colspan="6">Showing the first 250 of {0} findings. Use the exported finding table for the complete set.</td></tr>' -f $auditFindings.Count)) }
+        $null = $builder.AppendLine('</tbody></table>')
+    }
+
+    if ($defenderRows.Count -gt 0) {
+        $null = $builder.AppendLine('<h2>Defender mail-detail analysis</h2>')
+        $null = $builder.AppendLine('<table><thead><tr><th>Verdict</th><th>Action / location</th><th>Rows</th></tr></thead><tbody>')
+        foreach ($group in @($defenderRows | Group-Object VerdictSource, Action | Sort-Object Count -Descending)) {
+            $sample = $group.Group | Select-Object -First 1
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f (ConvertTo-IRHtml $sample.VerdictSource), (ConvertTo-IRHtml $sample.Action), $group.Count))
+        }
+        $null = $builder.AppendLine('</tbody></table>')
+    }
+
+    if ($oauthGrants.Count -gt 0 -or $appRoleAssignments.Count -gt 0 -or $signIns.Count -gt 0 -or $authenticationMethods.Count -gt 0 -or $riskyUsers.Count -gt 0 -or $identityErrors.Count -gt 0) {
+        $null = $builder.AppendLine('<h2>Identity, consent, and authentication review</h2>')
+        $null = $builder.AppendLine('<h3>Delegated OAuth grants</h3><table><thead><tr><th>Application</th><th>Publisher</th><th>Consent</th><th>Scopes</th><th>High-review scopes</th><th>Risk</th></tr></thead><tbody>')
+        foreach ($grant in $oauthGrants) {
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td></tr>' -f
+                (ConvertTo-IRHtml $grant.ClientApplication), (ConvertTo-IRHtml $grant.Publisher), (ConvertTo-IRHtml $grant.ConsentType),
+                (ConvertTo-IRHtml $grant.Scope), (ConvertTo-IRHtml $grant.HighRiskScopes), (ConvertTo-IRHtml $grant.Risk)))
+        }
+        if ($oauthGrants.Count -eq 0) { $null = $builder.AppendLine('<tr><td colspan="6">No delegated OAuth grants returned.</td></tr>') }
+        $null = $builder.AppendLine('</tbody></table>')
+
+        $null = $builder.AppendLine('<h3>Authentication methods</h3><table><thead><tr><th>Type</th><th>Display name</th><th>Created</th><th>Phone type</th><th>Email</th></tr></thead><tbody>')
+        foreach ($method in $authenticationMethods) {
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td></tr>' -f
+                (ConvertTo-IRHtml $method.MethodType), (ConvertTo-IRHtml $method.DisplayName), (ConvertTo-IRHtml $method.CreatedDateTime),
+                (ConvertTo-IRHtml $method.PhoneType), (ConvertTo-IRHtml $method.EmailAddress)))
+        }
+        if ($authenticationMethods.Count -eq 0) { $null = $builder.AppendLine('<tr><td colspan="5">No authentication methods returned.</td></tr>') }
+        $null = $builder.AppendLine('</tbody></table>')
+
+        if ($signIns.Count -gt 0) {
+            $null = $builder.AppendLine('<h3>Sign-in evidence</h3><table><thead><tr><th>UTC</th><th>Application / resource</th><th>Client</th><th>Source and location</th><th>Device</th><th>Conditional Access</th><th>Risk</th><th>Result</th></tr></thead><tbody>')
+            foreach ($signIn in @($signIns | Sort-Object CreatedDateTime -Descending | Select-Object -First 250)) {
+                $resultText = if ([int](Get-IRProperty -InputObject $signIn -Name 'ErrorCode' -Default 0) -eq 0) {
+                    'Success'
+                }
+                else {
+                    "$(Get-IRProperty -InputObject $signIn -Name 'ErrorCode'): $(Get-IRProperty -InputObject $signIn -Name 'FailureReason')"
+                }
+                $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td><td>{6}</td><td>{7}</td></tr>' -f
+                    (ConvertTo-IRHtml (Get-IRProperty -InputObject $signIn -Name 'CreatedDateTime')),
+                    (ConvertTo-IRHtml "$(Get-IRProperty -InputObject $signIn -Name 'AppDisplayName') / $(Get-IRProperty -InputObject $signIn -Name 'ResourceDisplayName')"),
+                    (ConvertTo-IRHtml (Get-IRProperty -InputObject $signIn -Name 'ClientAppUsed')),
+                    (ConvertTo-IRHtml "$(Get-IRProperty -InputObject $signIn -Name 'IPAddress') [$(Get-IRProperty -InputObject $signIn -Name 'IPAddressCategory')] / $(Get-IRProperty -InputObject $signIn -Name 'City'), $(Get-IRProperty -InputObject $signIn -Name 'State'), $(Get-IRProperty -InputObject $signIn -Name 'CountryOrRegion')"),
+                    (ConvertTo-IRHtml "$(Get-IRProperty -InputObject $signIn -Name 'OperatingSystem') / $(Get-IRProperty -InputObject $signIn -Name 'Browser'); managed=$(Get-IRProperty -InputObject $signIn -Name 'IsManaged'); compliant=$(Get-IRProperty -InputObject $signIn -Name 'IsCompliant')"),
+                    (ConvertTo-IRHtml (Get-IRProperty -InputObject $signIn -Name 'ConditionalAccessStatus')),
+                    (ConvertTo-IRHtml "$(Get-IRProperty -InputObject $signIn -Name 'RiskLevelAggregated') / $(Get-IRProperty -InputObject $signIn -Name 'RiskState')"),
+                    (ConvertTo-IRHtml $resultText)))
+            }
+            if ($signIns.Count -gt 250) { $null = $builder.AppendLine(('<tr><td colspan="8">Showing the newest 250 of {0} sign-ins. Use the exported sign-in timeline for the complete set.</td></tr>' -f $signIns.Count)) }
+            $null = $builder.AppendLine('</tbody></table>')
+        }
+
+        if ($riskyUsers.Count -gt 0) {
+            $null = $builder.AppendLine('<h3>Identity Protection risk status</h3><table><thead><tr><th>Listing status</th><th>Risk level</th><th>Risk state</th><th>Detail</th><th>Last updated</th><th>Interpretation</th></tr></thead><tbody>')
+            foreach ($riskRow in $riskyUsers) {
+                $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td></tr>' -f
+                    (ConvertTo-IRHtml (Get-IRProperty -InputObject $riskRow -Name 'ListingStatus')),
+                    (ConvertTo-IRHtml (Get-IRProperty -InputObject $riskRow -Name 'RiskLevel')),
+                    (ConvertTo-IRHtml (Get-IRProperty -InputObject $riskRow -Name 'RiskState')),
+                    (ConvertTo-IRHtml (Get-IRProperty -InputObject $riskRow -Name 'RiskDetail')),
+                    (ConvertTo-IRHtml (Get-IRProperty -InputObject $riskRow -Name 'RiskLastUpdatedDateTime')),
+                    (ConvertTo-IRHtml (Get-IRProperty -InputObject $riskRow -Name 'Note'))))
+            }
+            $null = $builder.AppendLine('</tbody></table>')
+        }
+
+        if ($identityErrors.Count -gt 0) {
+            $null = $builder.AppendLine('<h3>Identity coverage limitations</h3><table><thead><tr><th>Component</th><th>Limitation</th></tr></thead><tbody>')
+            foreach ($errorRow in $identityErrors) {
+                $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td></tr>' -f (ConvertTo-IRHtml $errorRow.Component), (ConvertTo-IRHtml $errorRow.Error)))
+            }
+            $null = $builder.AppendLine('</tbody></table>')
+        }
+    }
+
+    if ($exchangeDevices.Count -gt 0 -or $intuneDevices.Count -gt 0 -or $deviceErrors.Count -gt 0) {
+        $null = $builder.AppendLine('<h2>Device review</h2><table><thead><tr><th>Source</th><th>Identity / name</th><th>OS / model</th><th>Access / compliance</th><th>Last activity</th></tr></thead><tbody>')
+        foreach ($device in $exchangeDevices) {
+            $null = $builder.AppendLine(('<tr><td>Exchange</td><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td></tr>' -f
+                (ConvertTo-IRHtml $device.Identity), (ConvertTo-IRHtml "$($device.DeviceOS) / $($device.DeviceModel)"),
+                (ConvertTo-IRHtml "$($device.DeviceAccessState) / $($device.DeviceAccessStateReason)"), (ConvertTo-IRHtml $device.LastSuccessSync)))
+        }
+        foreach ($device in $intuneDevices) {
+            $null = $builder.AppendLine(('<tr><td>Intune</td><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td></tr>' -f
+                (ConvertTo-IRHtml $device.DeviceName), (ConvertTo-IRHtml "$($device.OperatingSystem) / $($device.Model)"),
+                (ConvertTo-IRHtml "$($device.ComplianceState) / $($device.ManagedDeviceOwnerType)"), (ConvertTo-IRHtml $device.LastSyncDateTime)))
+        }
+        foreach ($errorRow in $deviceErrors) {
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td colspan="4">{1}</td></tr>' -f (ConvertTo-IRHtml $errorRow.Component), (ConvertTo-IRHtml $errorRow.Error)))
+        }
+        $null = $builder.AppendLine('</tbody></table>')
+    }
+
+    if ($policyStatus.Count -gt 0) {
+        $null = $builder.AppendLine('<h2>Security-policy coverage</h2><table><thead><tr><th>Policy family</th><th>Status</th><th>Records</th><th>Limitation</th></tr></thead><tbody>')
+        foreach ($row in $policyStatus) {
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td></tr>' -f
+                (ConvertTo-IRHtml $row.Component), (ConvertTo-IRHtml $row.Status), (ConvertTo-IRHtml $row.Records), (ConvertTo-IRHtml $row.Error)))
+        }
+        $null = $builder.AppendLine('</tbody></table>')
+    }
+
+    $null = $builder.AppendLine('<h2>Investigator decision framework</h2>')
+    $null = $builder.AppendLine('<ul><li>Validate mailbox forwarding, delegation, hidden rules, applications, and authentication methods against approved state.</li><li>Correlate Defender verdicts with final delivery location, remediation, clicks, and endpoint evidence.</li><li>Prioritize large external messages, after-hours sending, high-risk audit operations, and failed/partial source records.</li><li>Identify every OAuth client, publisher, consent actor, consent time, last use, and business owner before revocation.</li><li>Treat missing licensed workloads as coverage limitations, never as clean evidence.</li><li>Preserve the source exports and regenerate the evidence manifest after adding trusted external evidence.</li></ul>')
 
     $null = $builder.AppendLine('<h2>Service connections</h2><table><thead><tr><th>Service</th><th>Connected</th><th>Identity</th></tr></thead><tbody>')
     foreach ($row in @($connections)) {
@@ -5072,11 +5451,10 @@ function Invoke-IRComprehensiveCollection {
     $status = [System.Collections.Generic.List[object]]::new()
     $safe = ConvertTo-IRSafeFileName -Value $upn
 
-    $status.Add((Invoke-IRCollectionStep -Name 'User profile' -Operation {
-        $userProfile = Get-IRGraphUser -UserPrincipalName $upn
-        $null = Export-IRData -Data @($userProfile) -BaseName "UserProfile-$safe" -Format Json -Subdirectory 'Identity'
-        $userProfile
-    }))
+    # Complete the Exchange-backed steps before Graph authentication. The
+    # verified module baselines currently carry different MSAL versions; this
+    # order avoids the Graph-first assembly collision while keeping each step's
+    # failure reporting independent.
     $status.Add((Invoke-IRCollectionStep -Name 'Mailbox configuration' -Operation {
         Export-IRMailboxInvestigation -UserPrincipalName $upn -IncludeAllFolders:$includeFolderInventory
     }))
@@ -5085,6 +5463,36 @@ function Invoke-IRComprehensiveCollection {
     }))
     $status.Add((Invoke-IRCollectionStep -Name 'Unified audit log' -Operation {
         Export-IRUserAuditInvestigation -UserPrincipalName $upn -DaysBack $DaysBack -IncludeAdminOnlyExport
+    }))
+
+    if (-not $Quick) {
+        if (-not $SkipDefender) {
+            $status.Add((Invoke-IRCollectionStep -Name 'Threat and Defender' -Operation {
+                Export-IRThreatInvestigation -UserPrincipalName $upn -DaysBack $DaysBack
+            }))
+        }
+        if (-not $SkipPolicies) {
+            $status.Add((Invoke-IRCollectionStep -Name 'Security policies' -Operation {
+                Backup-IRSecurityPolicy
+            }))
+        }
+    }
+
+    $status.Add((Invoke-IRCollectionStep -Name 'User profile' -Operation {
+        $userProfile = Get-IRGraphUser -UserPrincipalName $upn
+        # Export a stable evidence record instead of recursively serializing the
+        # Graph SDK object's internal backing graph, which can be very large and
+        # can exceed ConvertTo-Json's maximum depth.
+        $userRecord = [pscustomobject][ordered]@{
+            Id = [string]$userProfile.Id
+            UserPrincipalName = [string]$userProfile.UserPrincipalName
+            DisplayName = [string]$userProfile.DisplayName
+            AccountEnabled = [bool]$userProfile.AccountEnabled
+            Mail = [string]$userProfile.Mail
+            MySite = [string]$userProfile.MySite
+        }
+        $null = Export-IRData -Data @($userRecord) -BaseName "UserProfile-$safe" -Format Json -Subdirectory 'Identity'
+        $userRecord
     }))
     $status.Add((Invoke-IRCollectionStep -Name 'Identity and sign-ins' -Operation {
         Export-IRIdentityInvestigation -UserPrincipalName $upn -DaysBack ([math]::Min(180, $DaysBack))
@@ -5102,16 +5510,6 @@ function Invoke-IRComprehensiveCollection {
         if (-not $SkipTeams) {
             $status.Add((Invoke-IRCollectionStep -Name 'Microsoft Teams' -Operation {
                 Export-IRTeamsForensicData -UserPrincipalName $upn -IncludeAuditEvents -DaysBack ([math]::Min(180, $DaysBack))
-            }))
-        }
-        if (-not $SkipDefender) {
-            $status.Add((Invoke-IRCollectionStep -Name 'Threat and Defender' -Operation {
-                Export-IRThreatInvestigation -UserPrincipalName $upn -DaysBack $DaysBack
-            }))
-        }
-        if (-not $SkipPolicies) {
-            $status.Add((Invoke-IRCollectionStep -Name 'Security policies' -Operation {
-                Backup-IRSecurityPolicy
             }))
         }
         if ($IncludeSharePoint) {
@@ -5902,8 +6300,8 @@ function Start-IRInteractiveConsole {
     }
     if (-not $script:IR.NoAutoConnect) {
         if (Read-IRYesNo -Prompt 'Connect to Microsoft Graph and Exchange Online now?') {
-            try { $null = Connect-IRGraph } catch { Write-IRWarn "Graph connection failed: $($_.Exception.Message)" }
             try { Connect-IRExchange } catch { Write-IRWarn "Exchange connection failed: $($_.Exception.Message)" }
+            try { $null = Connect-IRGraph } catch { Write-IRWarn "Graph connection failed: $($_.Exception.Message)" }
         }
     }
 

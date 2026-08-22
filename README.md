@@ -104,6 +104,23 @@ Run only the local safety and regression checks:
 pwsh -File .\M365-IR-Console.ps1 -OfflineSelfTest
 ```
 
+Use device-code authentication on a headless workstation or when an embedded
+browser cannot be displayed:
+
+```powershell
+pwsh -File .\M365-IR-Console.ps1 `
+    -UserPrincipalName user@contoso.com `
+    -UseDeviceAuthentication
+```
+
+The built-in startup, online preflight, and comprehensive collection workflows
+connect Exchange Online before Microsoft Graph. The current verified module
+baselines bundle different Microsoft Authentication Library versions, and this
+order avoids the known Graph-first assembly collision. If Graph was connected
+manually before Exchange in the same process and Exchange authentication fails
+with an assembly-version error, start a fresh PowerShell process and connect
+Exchange first, or isolate the two service collections in separate processes.
+
 Run the non-authenticated prerequisite report:
 
 ```powershell
@@ -157,6 +174,7 @@ Audit mode replaces each reviewed write scope with a read-only alternative. An u
 - Message Trace V2 retains up to 90 days, accepts no more than 10 days per query, returns at most 5,000 rows per request, and is subject to service throttling. The console divides the period into service-compliant windows and records incomplete results.
 - Defender mail-detail collection is limited to the service's supported period and record ceiling.
 - Unified Audit Log retention, result availability, and record fields depend on licensing, configuration, workload, and assigned roles.
+- Sign-in logs, risky-user data, Intune inventory, Safe Links, Safe Attachments, and other premium workloads may be unavailable when the tenant lacks the corresponding license, enabled service, or administrative role. The console reports those conditions as unavailable or not applicable instead of treating them as product failures.
 - Console-managed MFA policy expiration is recorded as metadata. Review and remove expired policies through the console instead of assuming automatic deletion.
 - Heuristic findings are analyst leads, not determinations of compromise.
 - Live actions can disrupt accounts, mail flow, applications, devices, or access. Use an approved change and incident process.
@@ -166,7 +184,7 @@ Audit mode replaces each reviewed write scope with a read-only alternative. An u
 Release validation includes:
 
 - 22 deterministic built-in offline self-tests
-- 46 Pester 6.1.0 regression tests
+- 52 Pester 6.1.0 regression tests
 - PowerShell parser validation
 - PSScriptAnalyzer 1.25.0 with zero warning or error findings
 - Mutation-gateway and exact-confirmation AST checks

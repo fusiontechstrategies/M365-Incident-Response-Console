@@ -11,6 +11,7 @@ BeforeAll {
             [string[]]$Scopes,
             [string]$ContextScope,
             [switch]$NoWelcome,
+            [switch]$UseDeviceCode,
             [string]$TenantId
         )
     }
@@ -51,6 +52,8 @@ BeforeAll {
         $script:IR.ActionSequence = 0L
         $script:IR.LastActionHash = '0' * 64
         $script:IR.Results.Clear()
+        $script:IR.GraphBroadConsentAcknowledged = $false
+        $script:IR.UseDeviceAuthentication = $false
         foreach ($key in @($script:IR.Connections.Keys)) {
             $script:IR.Connections[$key] = $false
         }
@@ -94,6 +97,32 @@ Describe 'Parser and static safety gates' {
         }, $true) | ForEach-Object { $_.GetCommandName() })
         $commands | Should -Not -Contain 'Invoke-Expression'
         $commands | Should -Not -Contain 'New-ComplianceSearchAction'
+    }
+
+    It 'orders Exchange-backed authentication and collection before Graph' {
+        $tokens = $null
+        $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $script:ScriptUnderTest,
+            [ref]$tokens,
+            [ref]$errors
+        )
+        $functions = @($ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+        }, $true))
+
+        foreach ($name in @('Test-IRPreflight', 'Start-IRInteractiveConsole')) {
+            $text = @($functions | Where-Object Name -eq $name | Select-Object -First 1).Extent.Text
+            $text.IndexOf('Connect-IRExchange', [StringComparison]::Ordinal) |
+                Should -BeLessThan $text.IndexOf('Connect-IRGraph', [StringComparison]::Ordinal)
+        }
+
+        $collectionText = @($functions | Where-Object Name -eq 'Invoke-IRComprehensiveCollection' | Select-Object -First 1).Extent.Text
+        $collectionText.IndexOf("-Name 'Mailbox configuration'", [StringComparison]::Ordinal) |
+            Should -BeLessThan $collectionText.IndexOf("-Name 'User profile'", [StringComparison]::Ordinal)
+        $collectionText.IndexOf("-Name 'Threat and Defender'", [StringComparison]::Ordinal) |
+            Should -BeLessThan $collectionText.IndexOf("-Name 'User profile'", [StringComparison]::Ordinal)
     }
 
     It 'requires exact confirmation on every production mutation gateway call' {
@@ -216,6 +245,19 @@ Describe 'Portable input and path handling' {
         else {
             [int][System.IO.File]::GetUnixFileMode($casePath) | Should -Be 448
         }
+    }
+
+    It 'reads generic and read-only dictionary properties safely' {
+        $dictionary = [System.Collections.Generic.Dictionary[string, object]]::new()
+        $dictionary['@odata.type'] = '#microsoft.graph.phoneAuthenticationMethod'
+        $readOnly = [System.Collections.ObjectModel.ReadOnlyDictionary[string, object]]::new($dictionary)
+        Get-IRProperty -InputObject $readOnly -Name '@odata.type' | Should -BeExactly '#microsoft.graph.phoneAuthenticationMethod'
+    }
+
+    It 'builds valid Exchange mailbox-folder identities' {
+        ConvertTo-IRMailboxFolderIdentity -UserPrincipalName 'user@example.com' -FolderPath '/Inbox/Child' | Should -BeExactly 'user@example.com:\Inbox\Child'
+        ConvertTo-IRMailboxFolderIdentity -UserPrincipalName 'user@example.com' -FolderPath "/Projects$([char]0xF8FF)Federal" | Should -BeExactly 'user@example.com:\Projects/Federal'
+        ConvertTo-IRMailboxFolderIdentity -UserPrincipalName 'user@example.com' -FolderPath '' -ReportedIdentity 'user@example.com\Calendar' | Should -BeExactly 'user@example.com:\Calendar'
     }
 }
 
@@ -370,6 +412,49 @@ Describe 'Graph scope safety' {
         Should -Invoke Connect-MgGraph -Times 1 -Exactly -ParameterFilter {
             'User.Read.All' -in $Scopes -and 'User.ReadWrite.All' -notin $Scopes
         }
+    }
+
+    It 'does not reconnect repeatedly when the identity platform returns broader pre-consented scopes' {
+        $script:IR.Mode = 'Audit'
+        Mock Import-IRModule { [pscustomobject]@{ Name = $Name } }
+        Mock Test-IRGraphConnected { $true }
+        Mock Get-MgContext {
+            [pscustomobject]@{
+                Account = 'analyst@example.com'
+                TenantId = '11111111-1111-1111-1111-111111111111'
+                Scopes = @('User.ReadWrite.All')
+            }
+        }
+        Mock Disconnect-MgGraph { }
+        Mock Connect-MgGraph { }
+
+        $first = Connect-IRGraph -Scopes @('User.Read.All') -Modules @('Microsoft.Graph.Users')
+        $second = Connect-IRGraph -Scopes @('User.Read.All') -Modules @('Microsoft.Graph.Users')
+
+        $first.Scopes | Should -Contain 'User.ReadWrite.All'
+        $second.Scopes | Should -Contain 'User.ReadWrite.All'
+        $script:IR.GraphBroadConsentAcknowledged | Should -BeTrue
+        Should -Invoke Disconnect-MgGraph -Times 1 -Exactly
+        Should -Invoke Connect-MgGraph -Times 1 -Exactly
+    }
+
+    It 'passes device-code authentication to Graph when requested' {
+        $script:IR.Mode = 'Audit'
+        $script:IR.UseDeviceAuthentication = $true
+        Mock Import-IRModule { [pscustomobject]@{ Name = $Name } }
+        Mock Test-IRGraphConnected { $false }
+        Mock Connect-MgGraph { }
+        Mock Get-MgContext {
+            [pscustomobject]@{
+                Account = 'analyst@example.com'
+                TenantId = '11111111-1111-1111-1111-111111111111'
+                Scopes = @('User.Read.All')
+            }
+        }
+
+        $null = Connect-IRGraph -Scopes @('User.Read.All') -Modules @('Microsoft.Graph.Users')
+
+        Should -Invoke Connect-MgGraph -Times 1 -Exactly -ParameterFilter { $UseDeviceCode }
     }
 
     It 'preserves an explicitly requested write scope in Live mode' {
@@ -595,6 +680,84 @@ Describe 'Risk and audit analysis' {
         $result = Get-IRRiskyUser -UserPrincipalName 'user@example.com'
         $result.ListingStatus | Should -BeExactly 'NotListedAsRisky'
         $result.RiskLevel | Should -BeExactly 'none'
+    }
+}
+
+Describe 'Investigator case report' {
+    It 'renders the detailed evidence and decision sections' {
+        $casePath = New-IRTestCase
+        Mock Get-IRConnectionStatus {
+            @([pscustomobject]@{ Service = 'Microsoft Graph'; Connected = $false; Identity = $null })
+        }
+
+        $script:IR.Results['Collection:Mailbox configuration'] = [pscustomobject]@{
+            Snapshot = [pscustomobject]@{
+                Summary = [pscustomobject]@{
+                    HasForwarding = $false
+                    ForwardingSmtpAddress = $null
+                    DeliverToMailboxAndForward = $false
+                    GrantSendOnBehalfTo = @()
+                    AuditEnabled = $true
+                    LitigationHoldEnabled = $false
+                    SingleItemRecoveryEnabled = $true
+                    ItemCount = 42
+                    TotalItemSize = '1 MB'
+                }
+                InboxRules = @([pscustomobject]@{
+                    Name = 'Synthetic rule'
+                    Enabled = $true
+                    Risk = 'Low'
+                    Reasons = 'Test evidence'
+                    ForwardTo = @()
+                    RedirectTo = @()
+                    ForwardAsAttachmentTo = @()
+                    MoveToFolder = $null
+                    DeleteMessage = $false
+                    MarkAsRead = $false
+                })
+            }
+            Applications = @()
+            Permissions = [pscustomobject]@{ FolderErrors = @(); SkippedFolders = @() }
+        }
+        $script:IR.Results['Collection:Message trace'] = [pscustomobject]@{
+            Messages = @([pscustomobject]@{ Status = 'Delivered' })
+            Analysis = [pscustomobject]@{
+                SentRows = 1
+                ReceivedRows = 0
+                Anomalies = @([pscustomobject]@{ Type = 'Large external'; Severity = 'High'; Count = 1; Detail = 'Synthetic lead' })
+            }
+        }
+        $script:IR.Results['Collection:Unified audit log'] = [pscustomobject]@{
+            Events = @([pscustomobject]@{ Operation = 'HardDelete' })
+            Findings = @([pscustomobject]@{
+                Severity = 'High'
+                Operation = 'HardDelete'
+                CreationUtc = '2026-01-01T00:00:00Z'
+                ClientIP = '192.0.2.1'
+                ObjectId = 'synthetic-object'
+                Reasons = 'Synthetic high-risk operation'
+            })
+        }
+
+        $path = New-IRCaseReport -CollectionStatus @([pscustomobject]@{
+            Component = 'Synthetic collection'
+            Status = 'Completed'
+            DurationSeconds = 1
+            Error = $null
+        }) -Confirm:$false
+        $html = Get-Content -LiteralPath $path -Raw -Encoding utf8
+
+        foreach ($heading in @(
+            'Investigator summary',
+            'Mailbox controls and persistence review',
+            'Message-flow analysis',
+            'Unified-audit analysis',
+            'Investigator decision framework'
+        )) {
+            $html | Should -Match ([regex]::Escape($heading))
+        }
+        $html | Should -Match 'Synthetic high-risk operation'
+        $path | Should -Be (Join-Path -Path $casePath -ChildPath 'case_report.html')
     }
 }
 
