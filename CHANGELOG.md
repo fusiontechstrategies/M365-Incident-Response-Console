@@ -2,7 +2,7 @@
 
 All notable project changes are documented here.
 
-## 5.0.1 | 2026-08-22
+## 5.1.0 | 2026-08-22
 
 ### Fixed
 

@@ -72,7 +72,7 @@
     .\M365-IR-Console.ps1 -OfflineSelfTest
 
 .NOTES
-    Version: 5.0.1
+    Version: 5.1.0
     Target runtime: PowerShell 7.6+
     Tested runtime: PowerShell 7.6.4
     License: MIT
@@ -103,7 +103,7 @@ Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'Continue'
 
-$script:IRVersion = [version]'5.0.1'
+$script:IRVersion = [version]'5.1.0'
 $script:IRMinimumPowerShell = [version]'7.6.0'
 $script:IRScriptPath = $PSCommandPath
 $script:IRModuleCatalog = [ordered]@{
