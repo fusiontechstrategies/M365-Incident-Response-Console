@@ -1,11 +1,17 @@
 # M365 Incident Response Console
 
+<p align="center">
+  <img src=".github/assets/social-preview.jpg" width="960" alt="M365 Incident Response: Guarded. Auditable. Operator-first.">
+</p>
+
 > Turn a compromised Microsoft 365 identity into a controlled, evidence-backed response without assembling a dozen disconnected scripts.
 
 [![CI](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/actions/workflows/ci.yml/badge.svg)](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/actions/workflows/ci.yml)
 [![Dependency smoke test](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/actions/workflows/dependency-smoke.yml/badge.svg)](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/actions/workflows/dependency-smoke.yml)
 [![PowerShell 7.6+](https://img.shields.io/badge/PowerShell-7.6%2B-5391FE?logo=powershell&logoColor=white)](https://github.com/PowerShell/PowerShell)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+**Start here:** [Download the tested v5.1.0 release asset](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/download/v5.1.0/M365-IR-Console.ps1) · [Read the release notes](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/tag/v5.1.0) · [Preview a sanitized case report](examples/sanitized-case-report.md) · [Follow the safe lab guide](docs/lab-evaluation.md)
 
 M365 Incident Response Console is a one-file PowerShell application for Microsoft 365 investigation, guarded containment, forensic collection, remediation, and evidence integrity. It brings Microsoft Graph, Exchange Online, Purview, Teams, SharePoint, and local case handling into one interactive workflow.
 
@@ -59,6 +65,17 @@ Returning from Live mode to Audit mode disconnects cached service sessions so a 
 
 The console does not contain real credentials, tenant identifiers, customer names, or API keys. Authentication is handled by the official Microsoft modules.
 
+### Compatibility status
+
+| Environment | Current status |
+| --- | --- |
+| Windows with PowerShell 7.6+ | Recommended operator environment; the complete offline suite runs in CI on current Windows runners |
+| Ubuntu with PowerShell 7.6+ | The complete offline suite runs in CI; individual Microsoft service modules can impose additional platform limitations |
+| macOS | Not currently exercised in CI; no live-service compatibility claim is made |
+| Windows PowerShell 5.1 or PowerShell earlier than 7.6 | Unsupported and blocked by the script's runtime requirement |
+
+Automated validation never authenticates to a tenant. Live-service behavior remains dependent on the official Microsoft modules, the tenant's licenses and configuration, and the operator's delegated roles. Evaluate the exact workflows you plan to use in an approved test tenant before production use.
+
 ### Current module baselines
 
 These versions were verified against the PowerShell Gallery on August 20, 2026.
@@ -74,34 +91,50 @@ Use `-InstallMissingModules` only after reviewing your organization's module-man
 
 ## Quick start
 
-1. Download [M365-IR-Console.ps1](M365-IR-Console.ps1).
-2. Verify the file and review the source before execution.
-3. Open PowerShell 7.6 or later.
-4. Run the console in its default Audit mode.
+Open PowerShell 7.6 or later, then copy and paste this block. It downloads the versioned v5.1.0 release asset and refuses to continue if its SHA-256 digest differs from the digest published by GitHub for that asset.
 
 ```powershell
-Get-FileHash .\M365-IR-Console.ps1 -Algorithm SHA256
-pwsh -File .\M365-IR-Console.ps1
+$releaseUri = 'https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/download/v5.1.0/M365-IR-Console.ps1'
+$expectedSha256 = '0092D181A7EE0383D9F3C9B45CC55FAC583B2029CB168D59A3EB546DD0BE207A'
+$destination = Join-Path -Path (Get-Location) -ChildPath 'M365-IR-Console.ps1'
+$download = "$destination.download"
+
+if ((Test-Path -LiteralPath $destination) -or (Test-Path -LiteralPath $download)) {
+    throw 'A destination or partial download already exists. Use an empty directory or move that file before continuing.'
+}
+Invoke-WebRequest -Uri $releaseUri -OutFile $download
+$actualSha256 = (Get-FileHash -LiteralPath $download -Algorithm SHA256).Hash
+if ($actualSha256 -cne $expectedSha256) {
+    Remove-Item -LiteralPath $download -Force
+    throw "Release digest mismatch. Expected $expectedSha256; received $actualSha256."
+}
+Move-Item -LiteralPath $download -Destination $destination
+"Verified release asset: $destination"
 ```
 
-Start with a target and a 30-day investigation window:
+Review the downloaded script according to your organization's software-intake process. Then run the local self-test and non-authenticated preflight before connecting to a tenant:
 
 ```powershell
-pwsh -File .\M365-IR-Console.ps1 `
-    -UserPrincipalName user@contoso.com `
+pwsh -NoProfile -File .\M365-IR-Console.ps1 -OfflineSelfTest
+pwsh -NoProfile -File .\M365-IR-Console.ps1 -PreflightOnly
+```
+
+The current release asset is not Authenticode-signed. The digest check above verifies the exact GitHub release asset; it does not establish publisher identity through a code-signing certificate. If organizational policy requires signed PowerShell, do not weaken execution policy. Use your approved internal signing process or wait for a signed release.
+
+For the first tenant-connected run, use a lab tenant and remain in the default Audit mode:
+
+```powershell
+pwsh -NoProfile -File .\M365-IR-Console.ps1 `
+    -UserPrincipalName analyst-test@contoso.example `
     -Days 30
 ```
 
-Install missing current-user modules during preflight:
+The example address is intentionally non-routable; replace it only with an approved test identity. Do not switch to Live mode during initial evaluation. The [safe lab evaluation guide](docs/lab-evaluation.md) covers roles, permissions, output handling, and change controls.
+
+Install missing current-user modules only after reviewing your module-management policy:
 
 ```powershell
-pwsh -File .\M365-IR-Console.ps1 -InstallMissingModules
-```
-
-Run only the local safety and regression checks:
-
-```powershell
-pwsh -File .\M365-IR-Console.ps1 -OfflineSelfTest
+pwsh -NoProfile -File .\M365-IR-Console.ps1 -InstallMissingModules
 ```
 
 Use device-code authentication on a headless workstation or when an embedded
@@ -127,6 +160,8 @@ Run the non-authenticated prerequisite report:
 pwsh -File .\M365-IR-Console.ps1 -PreflightOnly
 ```
 
+No PowerShell Gallery package has been published. See the [future Gallery publication plan](docs/powershell-gallery.md) for the metadata, versioning, signing, and validation work that must be completed as part of a future release.
+
 ## Case output
 
 The default case root is outside the repository:
@@ -146,6 +181,8 @@ A case can contain:
 - A portable analyst import package
 - `evidence_manifest.sha256.json` and `evidence_manifest.sha256.csv`
 - A protected ZIP archive and returned SHA-256 digest
+
+The [sanitized sample report](examples/sanitized-case-report.md) and its [machine-readable fixture](examples/sanitized-case-summary.json) show the decision-focused output without containing tenant data or representing a real incident.
 
 The hash chain and manifest provide tamper evidence. They do not replace organizational evidence-handling procedures, trusted timestamps, digital signatures, or chain-of-custody requirements.
 
@@ -179,12 +216,12 @@ Audit mode replaces each reviewed write scope with a read-only alternative. An u
 - Heuristic findings are analyst leads, not determinations of compromise.
 - Live actions can disrupt accounts, mail flow, applications, devices, or access. Use an approved change and incident process.
 
-## Validation
+## Current source validation
 
-Release validation includes:
+The current source tree is validated with:
 
 - 22 deterministic built-in offline self-tests
-- 52 Pester 6.1.0 regression tests
+- 55 Pester 6.1.0 regression tests
 - PowerShell parser validation
 - PSScriptAnalyzer 1.25.0 with zero warning or error findings
 - Mutation-gateway and exact-confirmation AST checks
@@ -197,6 +234,7 @@ Release validation includes:
 - Gitleaks scans of the release tree and Git history
 - GitHub Actions testing on current Windows and Ubuntu runners
 - A weekly current-dependency import and command-contract smoke test
+- Synthetic demo-fixture validation
 
 All automated tests are non-destructive and do not authenticate to a tenant.
 

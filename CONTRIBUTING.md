@@ -42,4 +42,3 @@ A focused pull request should explain:
 - Any licensing, retention, paging, or role limitations
 
 Use synthetic test data only. Do not authenticate automated tests to a live tenant.
-
