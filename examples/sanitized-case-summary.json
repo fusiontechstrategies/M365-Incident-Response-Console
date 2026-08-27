@@ -1,0 +1,76 @@
+{
+  "schema": "m365-ir-console/sanitized-demo/v1",
+  "synthetic": true,
+  "notice": "Illustrative data only. This fixture was not collected from a Microsoft 365 tenant and is not evidence of an incident.",
+  "case": {
+    "id": "IR-DEMO-20260827",
+    "target": "analyst-test@contoso.example",
+    "mode": "Audit",
+    "lookbackDays": 10
+  },
+  "collectionStatus": [
+    {
+      "component": "Mailbox configuration",
+      "status": "Completed",
+      "limitation": null
+    },
+    {
+      "component": "Message trace",
+      "status": "Completed",
+      "limitation": null
+    },
+    {
+      "component": "Unified audit log",
+      "status": "Partial",
+      "limitation": "Synthetic example of a retention boundary; validate against tenant licensing and policy."
+    },
+    {
+      "component": "Defender mail detail",
+      "status": "Unavailable",
+      "limitation": "Synthetic example of an unlicensed workload."
+    }
+  ],
+  "mailbox": {
+    "forwardingConfigured": false,
+    "auditEnabled": true,
+    "inboxRules": [
+      {
+        "name": "Archive completed invoices",
+        "enabled": true,
+        "risk": "Medium",
+        "action": "Move to Archive and mark as read",
+        "analystNote": "Validate the rule owner, creation time, and business purpose."
+      }
+    ]
+  },
+  "messageTrace": {
+    "rows": 18,
+    "sent": 7,
+    "received": 11,
+    "heuristicLeads": [
+      {
+        "type": "After-hours external send",
+        "severity": "Medium",
+        "sourceIp": "192.0.2.44",
+        "recipient": "billing@vendor.example",
+        "messageTraceId": "00000000-0000-0000-0000-000000000001"
+      }
+    ]
+  },
+  "unifiedAudit": {
+    "events": 126,
+    "triageIndicators": [
+      {
+        "operation": "UpdateInboxRules",
+        "severity": "Medium",
+        "sourceIp": "192.0.2.44",
+        "analystNote": "Correlate with approved user activity and the mailbox-rule snapshot."
+      }
+    ]
+  },
+  "decisionQueue": [
+    "Confirm the inbox rule with the user and its business owner.",
+    "Correlate the after-hours message with sign-in and endpoint evidence.",
+    "Resolve the audit-retention coverage gap before declaring the review complete."
+  ]
+}

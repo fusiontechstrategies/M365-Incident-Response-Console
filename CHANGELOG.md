@@ -2,6 +2,23 @@
 
 All notable project changes are documented here.
 
+## Unreleased
+
+### Added
+
+- Added a versioned, digest-verified release download path and a copy/paste
+  offline-first quick start
+- Added a safe lab evaluation guide plus synthetic Markdown and JSON case-report
+  previews
+- Added a future PowerShell Gallery publication plan without changing the
+  supported v5.1.0 executable or publishing a package
+
+### Changed
+
+- Documented the current platform-validation boundaries, tenant permission
+  model, and the unsigned status of the v5.1.0 release asset
+- Updated citation metadata to the current v5.1.0 release
+
 ## 5.1.0 | 2026-08-22
 
 ### Fixed

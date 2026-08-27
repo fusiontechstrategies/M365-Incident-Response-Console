@@ -99,6 +99,19 @@ Describe 'Parser and static safety gates' {
         $commands | Should -Not -Contain 'New-ComplianceSearchAction'
     }
 
+    It 'keeps public Markdown free of em dashes' {
+        $repositoryRoot = Split-Path -Path $script:ScriptUnderTest -Parent
+        $violations = @(Get-ChildItem -LiteralPath $repositoryRoot -Recurse -File -Filter '*.md' |
+            Where-Object {
+                [System.IO.File]::ReadAllText($_.FullName).Contains([char]0x2014)
+            } |
+            ForEach-Object {
+                [System.IO.Path]::GetRelativePath($repositoryRoot, $_.FullName)
+            })
+
+        $violations | Should -BeNullOrEmpty
+    }
+
     It 'orders Exchange-backed authentication and collection before Graph' {
         $tokens = $null
         $errors = $null
@@ -204,6 +217,28 @@ Describe 'Parser and static safety gates' {
             }
         }
         $unguarded.ToArray() | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Public demo fixtures' {
+    It 'keeps the sample machine-readable and explicitly synthetic' {
+        $fixturePath = Join-Path -Path $PSScriptRoot -ChildPath '..\examples\sanitized-case-summary.json'
+        $fixture = Get-Content -LiteralPath $fixturePath -Raw -Encoding utf8 |
+            ConvertFrom-Json -Depth 20 -DateKind String
+
+        $fixture.synthetic | Should -BeTrue
+        $fixture.case.mode | Should -BeExactly 'Audit'
+        $fixture.case.target | Should -Match '@[^.]+\.example$'
+        $fixture.messageTrace.heuristicLeads[0].sourceIp | Should -BeExactly '192.0.2.44'
+    }
+
+    It 'labels the human-readable report as synthetic and non-evidence' {
+        $reportPath = Join-Path -Path $PSScriptRoot -ChildPath '..\examples\sanitized-case-report.md'
+        $report = Get-Content -LiteralPath $reportPath -Raw -Encoding utf8
+
+        $report | Should -Match '(?i)synthetic preview'
+        $report | Should -Match '(?i)not cryptographically verifiable evidence'
+        $report | Should -Match 'analyst-test@contoso\.example'
     }
 }
 
