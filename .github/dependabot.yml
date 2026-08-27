@@ -11,7 +11,9 @@ updates:
     labels:
       - dependencies
     groups:
-      github-actions:
+      github-actions-minor-and-patch:
         patterns:
           - '*'
-
+        update-types:
+          - minor
+          - patch
