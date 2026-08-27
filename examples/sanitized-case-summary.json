@@ -71,6 +71,7 @@
   "decisionQueue": [
     "Confirm the inbox rule with the user and its business owner.",
     "Correlate the after-hours message with sign-in and endpoint evidence.",
-    "Resolve the audit-retention coverage gap before declaring the review complete."
+    "Resolve the audit-retention coverage gap before declaring the review complete.",
+    "Preserve raw exports and regenerate the evidence manifest after adding trusted external evidence."
   ]
 }
