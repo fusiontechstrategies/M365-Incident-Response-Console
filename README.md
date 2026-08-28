@@ -186,6 +186,12 @@ The [sanitized sample report](examples/sanitized-case-report.md) and its [machin
 
 The hash chain and manifest provide tamper evidence. They do not replace organizational evidence-handling procedures, trusted timestamps, digital signatures, or chain-of-custody requirements.
 
+### Sanitized fixture result
+
+![Sanitized M365 Audit-mode fixture result showing completed, partial, and unavailable collection states; a four-item investigator decision queue; and the boundary between chained logs and SHA-256 manifests versus trusted timestamps, signatures, and organizational chain of custody.](docs/images/m365-sanitized-fixture-result.png)
+
+Constructed fixture, not tenant evidence. Completed, partial, and unavailable collection states remain distinct, and the decision queue shows what must be resolved before case closure.
+
 ## Microsoft Graph scopes
 
 The console requests delegated scopes as individual workflows need them. Common read scopes include:
@@ -221,7 +227,7 @@ Audit mode replaces each reviewed write scope with a read-only alternative. An u
 The current source tree is validated with:
 
 - 22 deterministic built-in offline self-tests
-- 55 Pester 6.1.0 regression tests
+- 57 Pester 6.1.0 regression tests
 - PowerShell parser validation
 - PSScriptAnalyzer 1.25.0 with zero warning or error findings
 - Mutation-gateway and exact-confirmation AST checks

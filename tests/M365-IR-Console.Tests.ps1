@@ -259,6 +259,34 @@ Describe 'Public demo fixtures' {
         $report | Should -Match '(?i)not cryptographically verifiable evidence'
         $report | Should -Match 'analyst-test@contoso\.example'
     }
+
+    It 'keeps the README fixture visual exact, local, and explicitly synthetic' {
+        $repositoryRoot = Split-Path -Path $script:ScriptUnderTest -Parent
+        $pngPath = Join-Path -Path $repositoryRoot -ChildPath 'docs\images\m365-sanitized-fixture-result.png'
+        $svgPath = Join-Path -Path $repositoryRoot -ChildPath 'docs\images\source\m365-sanitized-fixture-result.svg'
+        $readmePath = Join-Path -Path $repositoryRoot -ChildPath 'README.md'
+
+        Test-Path -LiteralPath $pngPath -PathType Leaf | Should -BeTrue
+        Test-Path -LiteralPath $svgPath -PathType Leaf | Should -BeTrue
+
+        $pngBytes = [System.IO.File]::ReadAllBytes($pngPath)
+        [Convert]::ToHexString($pngBytes[0..7]) | Should -BeExactly '89504E470D0A1A0A'
+        [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($pngBytes)) |
+            Should -BeExactly 'ED0C83EFE22662ECE81A67A9E1ED0A95609E340BB2A2A6ED8246492B4BE8391A'
+        $pngWidth = [int](($pngBytes[16] * 16777216) + ($pngBytes[17] * 65536) + ($pngBytes[18] * 256) + $pngBytes[19])
+        $pngHeight = [int](($pngBytes[20] * 16777216) + ($pngBytes[21] * 65536) + ($pngBytes[22] * 256) + $pngBytes[23])
+        $pngWidth | Should -Be 1200
+        $pngHeight | Should -Be 1480
+
+        $svgText = [System.IO.File]::ReadAllText($svgPath)
+        { [xml]$svgText } | Should -Not -Throw
+        $svgText | Should -Not -Match '(?i)<script\b'
+        $svgText.Contains([char]0x2014) | Should -BeFalse
+
+        $readme = [System.IO.File]::ReadAllText($readmePath)
+        $readme | Should -Match ([regex]::Escape('](docs/images/m365-sanitized-fixture-result.png)'))
+        $readme | Should -Match ([regex]::Escape('Constructed fixture, not tenant evidence.'))
+    }
 }
 
 Describe 'Portable input and path handling' {
