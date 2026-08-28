@@ -78,14 +78,14 @@ Automated validation never authenticates to a tenant. Live-service behavior rema
 
 ### Current module baselines
 
-These versions were verified against the PowerShell Gallery on August 20, 2026.
+These versions were verified against the PowerShell Gallery on August 28, 2026.
 
 | Module family | Minimum version | Use |
 | --- | ---: | --- |
 | `ExchangeOnlineManagement` | `3.10.1` | Exchange Online and Microsoft Purview |
 | Microsoft Graph submodules | `2.39.0` | Authentication, users, identity, applications, reports, groups, and devices |
 | `MicrosoftTeams` | `7.9.0` | Optional Teams collection |
-| `Microsoft.Online.SharePoint.PowerShell` | `16.0.27515.12000` | Optional SharePoint collection |
+| `Microsoft.Online.SharePoint.PowerShell` | `16.0.27612.12000` | Optional SharePoint collection |
 
 Use `-InstallMissingModules` only after reviewing your organization's module-management policy. Installation is limited to the current user and the PowerShell Gallery.
 
@@ -160,7 +160,7 @@ Run the non-authenticated prerequisite report:
 pwsh -File .\M365-IR-Console.ps1 -PreflightOnly
 ```
 
-No PowerShell Gallery package has been published. See the [future Gallery publication plan](docs/powershell-gallery.md) for the metadata, versioning, signing, and validation work that must be completed as part of a future release.
+No PowerShell Gallery package has been published. The repository's 5.1.1 candidate now includes valid Gallery metadata and isolated modern plus legacy package-consumer tests, but v5.1.0 remains the current public release. See the [Gallery release-readiness record](docs/powershell-gallery.md) for the verified package path and remaining signing, account, tenant, and publication gates.
 
 ## Case output
 

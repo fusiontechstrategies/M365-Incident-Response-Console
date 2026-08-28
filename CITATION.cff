@@ -7,6 +7,5 @@ authors:
     given-names: "Jeffrey"
 repository-code: "https://github.com/fusiontechstrategies/M365-Incident-Response-Console"
 url: "https://github.com/fusiontechstrategies/M365-Incident-Response-Console"
-version: "5.1.0"
-date-released: "2026-08-22"
+version: "5.1.1"
 license: MIT

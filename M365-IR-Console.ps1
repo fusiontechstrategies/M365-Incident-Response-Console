@@ -1,3 +1,36 @@
+<#PSScriptInfo
+
+.VERSION 5.1.1
+
+.GUID 3d49185d-e43b-4ad0-8b87-78629275d00f
+
+.AUTHOR Jeffrey Friedler
+
+.COMPANYNAME Fusion Technology Strategies
+
+.COPYRIGHT Copyright (c) 2026 Fusion Technology Strategies. Licensed under the MIT License.
+
+.TAGS Microsoft365 M365 IncidentResponse DFIR Security Entra ExchangeOnline Purview Teams SharePoint Audit Evidence PowerShell PSEdition_Core Windows Linux
+
+.LICENSEURI https://github.com/fusiontechstrategies/M365-Incident-Response-Console/blob/main/LICENSE
+
+.PROJECTURI https://github.com/fusiontechstrategies/M365-Incident-Response-Console
+
+.ICONURI
+
+.EXTERNALMODULEDEPENDENCIES ExchangeOnlineManagement,Microsoft.Graph.Authentication,Microsoft.Graph.Users,Microsoft.Graph.Users.Actions,Microsoft.Graph.Identity.SignIns,Microsoft.Graph.Applications,Microsoft.Graph.Reports,Microsoft.Graph.Groups,Microsoft.Graph.Identity.DirectoryManagement,Microsoft.Graph.Devices.CorporateManagement,Microsoft.Graph.DeviceManagement,MicrosoftTeams,Microsoft.Online.SharePoint.PowerShell
+
+.REQUIREDSCRIPTS
+
+.EXTERNALSCRIPTDEPENDENCIES
+
+.RELEASENOTES
+Adds PowerShell Gallery metadata and isolated package validation without changing tenant behavior.
+
+.PRIVATEDATA
+
+#>
+
 #Requires -Version 7.6
 
 <#
@@ -72,7 +105,7 @@
     .\M365-IR-Console.ps1 -OfflineSelfTest
 
 .NOTES
-    Version: 5.1.0
+    Version: 5.1.1
     Target runtime: PowerShell 7.6+
     Tested runtime: PowerShell 7.6.4
     License: MIT
@@ -103,7 +136,7 @@ Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'Continue'
 
-$script:IRVersion = [version]'5.1.0'
+$script:IRVersion = [version]'5.1.1'
 $script:IRMinimumPowerShell = [version]'7.6.0'
 $script:IRScriptPath = $PSCommandPath
 $script:IRModuleCatalog = [ordered]@{
@@ -168,7 +201,7 @@ $script:IRModuleCatalog = [ordered]@{
         Purpose = 'Teams membership and channel inventory'
     }
     'Microsoft.Online.SharePoint.PowerShell' = [ordered]@{
-        MinimumVersion = [version]'16.0.27515.12000'
+        MinimumVersion = [version]'16.0.27612.12000'
         Optional = $true
         Purpose = 'SharePoint Online site and user inventory'
     }

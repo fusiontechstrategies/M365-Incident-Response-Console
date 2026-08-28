@@ -112,6 +112,25 @@ Describe 'Parser and static safety gates' {
         $violations | Should -BeNullOrEmpty
     }
 
+    It 'keeps Gallery metadata valid and synchronized with the application catalog' {
+        Import-Module Microsoft.PowerShell.PSResourceGet -RequiredVersion 1.2.0 -ErrorAction Stop
+        Test-PSScriptFileInfo -Path $script:ScriptUnderTest | Should -BeTrue
+
+        Import-Module PowerShellGet -RequiredVersion 2.2.5 -ErrorAction Stop
+        $metadata = Test-ScriptFileInfo -Path $script:ScriptUnderTest
+        $metadata.Name | Should -BeExactly 'M365-IR-Console'
+        $metadata.Version.ToString() | Should -BeExactly $script:IRVersion.ToString()
+        $metadata.Guid.ToString() | Should -BeExactly '3d49185d-e43b-4ad0-8b87-78629275d00f'
+        $metadata.ProjectUri.AbsoluteUri.TrimEnd('/') |
+            Should -BeExactly 'https://github.com/fusiontechstrategies/M365-Incident-Response-Console'
+        @($metadata.RequiredModules | Where-Object { $null -ne $_ }) | Should -BeNullOrEmpty
+
+        $declared = @($metadata.ExternalModuleDependencies | Sort-Object)
+        $implemented = @($script:IRModuleCatalog.Keys | Sort-Object)
+        @(Compare-Object -ReferenceObject $implemented -DifferenceObject $declared) |
+            Should -BeNullOrEmpty
+    }
+
     It 'orders Exchange-backed authentication and collection before Graph' {
         $tokens = $null
         $errors = $null
