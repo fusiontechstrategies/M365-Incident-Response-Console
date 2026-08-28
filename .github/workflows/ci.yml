@@ -45,6 +45,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          Install-PSResource -Name Microsoft.PowerShell.PSResourceGet -Version 1.2.0 -Repository PSGallery -Scope CurrentUser -TrustRepository -AcceptLicense -Quiet
+          Install-PSResource -Name PowerShellGet -Version 2.2.5 -Repository PSGallery -Scope CurrentUser -TrustRepository -AcceptLicense -Quiet
           Install-PSResource -Name Pester -Version 6.1.0 -Repository PSGallery -Scope CurrentUser -TrustRepository -AcceptLicense -Quiet
           Install-PSResource -Name PSScriptAnalyzer -Version 1.25.0 -Repository PSGallery -Scope CurrentUser -TrustRepository -AcceptLicense -Quiet
 
@@ -61,6 +63,13 @@ jobs:
           if ($result.FailedCount -gt 0) {
               throw "$($result.FailedCount) Pester test(s) failed."
           }
+
+      - name: Validate isolated Gallery package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $outputRoot = Join-Path -Path $env:RUNNER_TEMP -ChildPath "m365-gallery-$env:RUNNER_OS"
+          & ./scripts/Test-GalleryPackage.ps1 -OutputRoot $outputRoot | Format-List
 
       - name: Run PSScriptAnalyzer
         shell: pwsh

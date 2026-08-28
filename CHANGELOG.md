@@ -2,7 +2,7 @@
 
 All notable project changes are documented here.
 
-## Unreleased
+## 5.1.1 | Unreleased
 
 ### Added
 
@@ -12,12 +12,30 @@ All notable project changes are documented here.
   previews
 - Added a future PowerShell Gallery publication plan without changing the
   supported v5.1.0 executable or publishing a package
+- Added PowerShell Gallery script metadata with a stable package GUID,
+  project, license, author, company, tags, release notes, and informational
+  external module inventory
+- Added deterministic five-entry Gallery package construction, repeat-build
+  comparison, discovery, extraction, and exact installed-script verification
+  without public credentials
 
 ### Changed
 
 - Documented the current platform-validation boundaries, tenant permission
   model, and the unsigned status of the v5.1.0 release asset
-- Updated citation metadata to the current v5.1.0 release
+- Moved citation metadata to the 5.1.1 candidate while preserving v5.1.0 as
+  the current public release
+- Synchronized package, application, changelog, and citation identity at 5.1.1
+- Preserved optional, platform-dependent, and operator-approved dependency
+  installation rather than turning cloud modules into unconditional package
+  dependencies
+
+### Security
+
+- Required explicit local repository identity for packaging validation so a
+  test cannot fall through to the public PowerShell Gallery
+- Kept the first public Gallery publication, API key use, tagging, signing,
+  and release publication behind separate maintainer authorization
 
 ## 5.1.0 | 2026-08-22
 

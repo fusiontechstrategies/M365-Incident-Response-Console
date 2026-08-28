@@ -160,7 +160,7 @@ Run the non-authenticated prerequisite report:
 pwsh -File .\M365-IR-Console.ps1 -PreflightOnly
 ```
 
-No PowerShell Gallery package has been published. See the [future Gallery publication plan](docs/powershell-gallery.md) for the metadata, versioning, signing, and validation work that must be completed as part of a future release.
+No PowerShell Gallery package has been published. The repository's 5.1.1 candidate now includes valid Gallery metadata and isolated modern plus legacy package-consumer tests, but v5.1.0 remains the current public release. See the [Gallery release-readiness record](docs/powershell-gallery.md) for the verified package path and remaining signing, account, tenant, and publication gates.
 
 ## Case output
 
