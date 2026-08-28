@@ -29,6 +29,9 @@ All notable project changes are documented here.
 - Preserved optional, platform-dependent, and operator-approved dependency
   installation rather than turning cloud modules into unconditional package
   dependencies
+- Updated the verified optional SharePoint Online module baseline to
+  `16.0.27612.12000` after publisher, signature, payload, import, command-source,
+  and secret-scan review
 
 ### Security
 

@@ -201,7 +201,7 @@ $script:IRModuleCatalog = [ordered]@{
         Purpose = 'Teams membership and channel inventory'
     }
     'Microsoft.Online.SharePoint.PowerShell' = [ordered]@{
-        MinimumVersion = [version]'16.0.27515.12000'
+        MinimumVersion = [version]'16.0.27612.12000'
         Optional = $true
         Purpose = 'SharePoint Online site and user inventory'
     }
