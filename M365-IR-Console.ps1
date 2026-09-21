@@ -146,57 +146,57 @@ $script:IRModuleCatalog = [ordered]@{
         Purpose = 'Exchange Online and Microsoft Purview connectivity'
     }
     'Microsoft.Graph.Authentication' = [ordered]@{
-        MinimumVersion = [version]'2.39.0'
+        MinimumVersion = [version]'2.40.0'
         Optional = $false
         Purpose = 'Microsoft Graph authentication'
     }
     'Microsoft.Graph.Users' = [ordered]@{
-        MinimumVersion = [version]'2.39.0'
+        MinimumVersion = [version]'2.40.0'
         Optional = $false
         Purpose = 'User and delegated grant operations'
     }
     'Microsoft.Graph.Users.Actions' = [ordered]@{
-        MinimumVersion = [version]'2.39.0'
+        MinimumVersion = [version]'2.40.0'
         Optional = $false
         Purpose = 'Session revocation and mail actions'
     }
     'Microsoft.Graph.Identity.SignIns' = [ordered]@{
-        MinimumVersion = [version]'2.39.0'
+        MinimumVersion = [version]'2.40.0'
         Optional = $false
         Purpose = 'Conditional Access, user risk, and grant removal'
     }
     'Microsoft.Graph.Applications' = [ordered]@{
-        MinimumVersion = [version]'2.39.0'
+        MinimumVersion = [version]'2.40.0'
         Optional = $false
         Purpose = 'Service principals and app role assignments'
     }
     'Microsoft.Graph.Reports' = [ordered]@{
-        MinimumVersion = [version]'2.39.0'
+        MinimumVersion = [version]'2.40.0'
         Optional = $false
         Purpose = 'Sign-in logs'
     }
     'Microsoft.Graph.Groups' = [ordered]@{
-        MinimumVersion = [version]'2.39.0'
+        MinimumVersion = [version]'2.40.0'
         Optional = $true
         Purpose = 'Conditional Access exclusion groups'
     }
     'Microsoft.Graph.Identity.DirectoryManagement' = [ordered]@{
-        MinimumVersion = [version]'2.39.0'
+        MinimumVersion = [version]'2.40.0'
         Optional = $true
         Purpose = 'Tenant domains and directory role templates'
     }
     'Microsoft.Graph.Devices.CorporateManagement' = [ordered]@{
-        MinimumVersion = [version]'2.39.0'
+        MinimumVersion = [version]'2.40.0'
         Optional = $true
         Purpose = 'Intune managed devices'
     }
     'Microsoft.Graph.DeviceManagement' = [ordered]@{
-        MinimumVersion = [version]'2.39.0'
+        MinimumVersion = [version]'2.40.0'
         Optional = $true
         Purpose = 'Intune managed-device removal'
     }
     MicrosoftTeams = [ordered]@{
-        MinimumVersion = [version]'7.9.0'
+        MinimumVersion = [version]'8.0.0'
         Optional = $true
         Purpose = 'Teams membership and channel inventory'
     }
