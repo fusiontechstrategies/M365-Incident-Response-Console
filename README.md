@@ -78,12 +78,12 @@ Automated validation never authenticates to a tenant. Live-service behavior rema
 
 ### Current module baselines
 
-These versions were verified against the PowerShell Gallery on September 21, 2026.
+These versions were verified against the PowerShell Gallery on October 20, 2026.
 
 | Module family | Minimum version | Use |
 | --- | ---: | --- |
 | `ExchangeOnlineManagement` | `3.10.1` | Exchange Online and Microsoft Purview |
-| Microsoft Graph submodules | `2.41.1` | Authentication, users, identity, applications, reports, groups, and devices |
+| Microsoft Graph submodules | `2.41.2` | Authentication, users, identity, applications, reports, groups, and devices |
 | `MicrosoftTeams` | `8.0.0` | Optional Teams collection |
 | `Microsoft.Online.SharePoint.PowerShell` | `16.0.27709.12000` | Optional SharePoint collection |
 
