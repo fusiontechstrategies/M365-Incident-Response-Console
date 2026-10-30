@@ -946,7 +946,7 @@ function Export-IRData {
 
     switch ($Format) {
         'Csv' {
-            $items | Export-Csv -LiteralPath $path -NoTypeInformation -Encoding utf8
+            $items | ConvertTo-IRCsvSafeObject | Export-Csv -LiteralPath $path -NoTypeInformation -Encoding utf8
         }
         'Json' {
             $items | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $path -Encoding utf8
@@ -959,6 +959,28 @@ function Export-IRData {
     $null = Add-IRActionLog -Action 'Export local evidence' -Status Read -Target $path -Details @{ Records = $items.Count; Format = $Format }
     Write-IRSuccess "Exported $($items.Count) record(s) to $path"
     return $path
+}
+
+function ConvertTo-IRCsvSafeObject {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, ValueFromPipeline)]
+        [AllowNull()]
+        [object]$InputObject
+    )
+
+    process {
+        if ($null -eq $InputObject) { return }
+        $safe = [ordered]@{}
+        foreach ($property in $InputObject.PSObject.Properties) {
+            $value = $property.Value
+            if ($value -is [string] -and ($value -match '^(?:\s*[=+\-@]|[\t\r\n])')) {
+                $value = "'$value"
+            }
+            $safe[$property.Name] = $value
+        }
+        [pscustomobject]$safe
+    }
 }
 
 function Set-IRTarget {
@@ -5302,7 +5324,7 @@ function New-IRAxiomImportPackage {
         if ($records.Count -eq 0) { continue }
         $path = Join-Path -Path $directory -ChildPath $mapping.File
         if ($PSCmdlet.ShouldProcess($path, 'Write normalized CSV for analyst-tool import')) {
-            $records | Select-Object -Property $mapping.Fields | Export-Csv -LiteralPath $path -NoTypeInformation -Encoding utf8
+            $records | Select-Object -Property $mapping.Fields | ConvertTo-IRCsvSafeObject | Export-Csv -LiteralPath $path -NoTypeInformation -Encoding utf8
         }
         $created.Add($path)
     }
@@ -5360,7 +5382,7 @@ function New-IREvidenceManifest {
     }
     if ($PSCmdlet.ShouldProcess($jsonPath, 'Write SHA-256 evidence manifests')) {
         $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $jsonPath -Encoding utf8
-        @($rows) | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding utf8
+        @($rows) | ConvertTo-IRCsvSafeObject | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding utf8
     }
     Write-IRSuccess "Sealed $(@($rows).Count) file(s) in the SHA-256 manifest."
     return [pscustomobject]@{ JsonPath = $jsonPath; CsvPath = $csvPath; FileCount = @($rows).Count; Files = @($rows) }
@@ -5450,7 +5472,49 @@ function New-IRCaseArchive {
     $null = Add-IRActionLog -Action 'Create case ZIP archive' -Status Read -Target $archivePath
     $manifest = New-IREvidenceManifest
     if ($PSCmdlet.ShouldProcess($archivePath, 'Create ZIP archive of the case directory')) {
-        Compress-Archive -LiteralPath $script:IR.CasePath -DestinationPath $archivePath -CompressionLevel Optimal -ErrorAction Stop
+        $files = @(Get-ChildItem -LiteralPath $script:IR.CasePath -File -Recurse -Force | Sort-Object FullName)
+        $temporaryArchive = "$archivePath.$([guid]::NewGuid().ToString('N')).tmp"
+        $zip = $null
+        $archiveError = $null
+        try {
+            $zip = [System.IO.Compression.ZipFile]::Open($temporaryArchive, [System.IO.Compression.ZipArchiveMode]::Create)
+            foreach ($file in $files) {
+                $entryName = [System.IO.Path]::GetRelativePath($script:IR.CasePath, $file.FullName).Replace([System.IO.Path]::DirectorySeparatorChar, '/')
+                $null = [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                    $zip,
+                    $file.FullName,
+                    $entryName,
+                    [System.IO.Compression.CompressionLevel]::Optimal
+                )
+            }
+        }
+        catch {
+            $archiveError = $_
+        }
+        finally {
+            if ($null -ne $zip) { $zip.Dispose() }
+        }
+        if ($null -ne $archiveError) {
+            Remove-Item -LiteralPath $temporaryArchive -Force -ErrorAction SilentlyContinue
+            throw $archiveError
+        }
+
+        $expected = @($files | ForEach-Object {
+            [System.IO.Path]::GetRelativePath($script:IR.CasePath, $_.FullName).Replace([System.IO.Path]::DirectorySeparatorChar, '/')
+        })
+        $verification = [System.IO.Compression.ZipFile]::OpenRead($temporaryArchive)
+        try {
+            $actual = @($verification.Entries | ForEach-Object FullName)
+        }
+        finally {
+            $verification.Dispose()
+        }
+        if (@($actual | Select-Object -Unique).Count -ne $actual.Count -or
+            @(Compare-Object -ReferenceObject $expected -DifferenceObject $actual -CaseSensitive).Count -ne 0) {
+            Remove-Item -LiteralPath $temporaryArchive -Force -ErrorAction SilentlyContinue
+            throw 'Case archive verification failed because its file list did not match the evidence directory.'
+        }
+        Move-Item -LiteralPath $temporaryArchive -Destination $archivePath -ErrorAction Stop
         $null = Protect-IRCaseFile -Path $archivePath
         $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
         Write-IRSuccess "Created archive: $archivePath"
