@@ -844,6 +844,52 @@ Describe 'Investigator case report' {
 }
 
 Describe 'Evidence action log and manifest integrity' {
+    It 'neutralizes spreadsheet formulas in CSV evidence without changing numbers' {
+        $null = New-IRTestCase
+        $path = Export-IRData -BaseName 'formula-safety' -Format Csv -Data @(
+            [pscustomobject]@{
+                Equals = '=2+3'
+                Plus = '+cmd'
+                Minus = '-cmd'
+                At = '@SUM(A1:A2)'
+                Leading = "  =HYPERLINK(`"https://example.invalid`")"
+                Safe = 'ordinary evidence'
+                Number = -42
+            }
+        )
+        $row = Import-Csv -LiteralPath $path
+        $row.Equals | Should -BeExactly "'=2+3"
+        $row.Plus | Should -BeExactly "'+cmd"
+        $row.Minus | Should -BeExactly "'-cmd"
+        $row.At | Should -BeExactly "'@SUM(A1:A2)"
+        $row.Leading | Should -BeExactly "'  =HYPERLINK(`"https://example.invalid`")"
+        $row.Safe | Should -BeExactly 'ordinary evidence'
+        $row.Number | Should -BeExactly '-42'
+    }
+
+    It 'includes hidden evidence and both manifests in the verified case archive' {
+        $casePath = New-IRTestCase
+        $hiddenPath = Join-Path -Path $casePath -ChildPath '.hidden-evidence.txt'
+        'hidden evidence' | Set-Content -LiteralPath $hiddenPath -Encoding utf8
+        if ($IsWindows) {
+            $item = Get-Item -LiteralPath $hiddenPath -Force
+            $item.Attributes = $item.Attributes -bor [System.IO.FileAttributes]::Hidden
+        }
+        $archive = New-IRCaseArchive -Confirm:$false
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($archive.ArchivePath)
+        try {
+            $entries = @($zip.Entries | ForEach-Object FullName)
+        }
+        finally {
+            $zip.Dispose()
+        }
+        $entries | Should -Contain '.hidden-evidence.txt'
+        $entries | Should -Contain 'evidence_manifest.sha256.json'
+        $entries | Should -Contain 'evidence_manifest.sha256.csv'
+        @($archive.Manifest.Files.RelativePath) | Should -Contain '.hidden-evidence.txt'
+        $entries.Count | Should -BeGreaterThan $archive.Manifest.FileCount
+    }
+
     It 'validates an intact action log and detects a changed entry' {
         $casePath = New-IRTestCase
         $null = Add-IRActionLog -Action 'Synthetic evidence read' -Status Read -Target 'item-1' -RequireDurable
