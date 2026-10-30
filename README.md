@@ -13,9 +13,19 @@
 
 **Start here:** [Download the tested v5.1.0 release asset](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/download/v5.1.0/M365-IR-Console.ps1) · [Read the release notes](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/tag/v5.1.0) · [Preview a sanitized case report](examples/sanitized-case-report.md) · [Follow the safe lab guide](docs/lab-evaluation.md)
 
+> **Project status: maintained public release.** Version 5.1.0 is the current tested release. The complete automated suite is offline and never authenticates to a tenant; validate the exact licensed services and workflows you intend to use in an approved test tenant before production operation.
+
 M365 Incident Response Console is a one-file PowerShell application for Microsoft 365 investigation, guarded containment, forensic collection, remediation, and evidence integrity. It brings Microsoft Graph, Exchange Online, Purview, Teams, SharePoint, and local case handling into one interactive workflow.
 
 The application starts in **Audit mode**. Audit mode blocks every tenant mutation and replaces reviewed Microsoft Graph write scopes with read-only scopes. **Live mode** must be selected explicitly, and every tenant-changing operation passes through a common gateway with `ShouldProcess`, an exact typed confirmation, and durable case logging.
+
+## Ten-minute evaluation without a tenant
+
+1. Open the [sanitized case report](examples/sanitized-case-report.md) and its [structured summary](examples/sanitized-case-summary.json) to see the evidence and investigator decision queue first.
+2. Download the versioned release asset through the hash-verified [quick start](#quick-start), then run `-OfflineSelfTest` and `-PreflightOnly`. Neither command authenticates or changes a tenant.
+3. Follow the [safe lab guide](docs/lab-evaluation.md) before considering an approved test tenant. Keep Audit mode enabled until the investigation output, requested read scopes, licensing boundaries, and evidence location are understood.
+
+The first useful result is a reviewable case and an explicit list of unavailable or partial collectors, not a containment action. Live response remains a separate authorization decision.
 
 ## Why this is different
 
@@ -244,6 +254,11 @@ The current source tree is validated with:
 
 All automated tests are non-destructive and do not authenticate to a tenant.
 
+
+## Related Fusion projects
+
+- [Windows Admin Toolkit](https://github.com/fusiontechstrategies/Windows-Admin-Toolkit) provides signed, guarded Windows administration and RMM-oriented automation outside the Microsoft 365 tenant boundary.
+- Explore the complete [Fusion Technology Strategies public portfolio](https://github.com/fusiontechstrategies/FusionTechStrategies).
 
 ## Contributing and security
 
