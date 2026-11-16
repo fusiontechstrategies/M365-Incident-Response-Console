@@ -82,10 +82,39 @@ jobs:
           $ErrorActionPreference = 'Stop'
           . ./M365-IR-Console.ps1 -NoAutoConnect -SkipPreflight
 
+          function Invoke-GalleryOperation {
+              [CmdletBinding()]
+              param(
+                  [Parameter(Mandatory)]
+                  [scriptblock]$Operation,
+                  [Parameter(Mandatory)]
+                  [string]$Description,
+                  [ValidateRange(1, 6)]
+                  [int]$MaxAttempts = 4
+              )
+
+              for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+                  try {
+                      return & $Operation
+                  }
+                  catch {
+                      if ($attempt -eq $MaxAttempts) {
+                          throw
+                      }
+                      $delaySeconds = [Math]::Min(30, [int][Math]::Pow(2, $attempt))
+                      Write-Warning "$Description failed on attempt $attempt of $MaxAttempts. Retrying in $delaySeconds second(s). $($_.Exception.Message)"
+                      Start-Sleep -Seconds $delaySeconds
+                  }
+              }
+          }
+
           $rows = foreach ($entry in $script:IRModuleCatalog.GetEnumerator()) {
               $name = [string]$entry.Key
               $required = [version]$entry.Value.MinimumVersion
-              $latest = Find-PSResource -Name $name -Repository PSGallery -Type Module |
+              $available = @(Invoke-GalleryOperation -Description "Find $name in PSGallery" -Operation {
+                  @(Find-PSResource -Name $name -Repository PSGallery -Type Module)
+              })
+              $latest = $available |
                   Sort-Object Version -Descending |
                   Select-Object -First 1
               if ($null -eq $latest) {
@@ -94,7 +123,9 @@ jobs:
               if ([version]$latest.Version -ne $required) {
                   throw "Dependency baseline drift for $name. Script: $required. Gallery: $($latest.Version)."
               }
-              Install-PSResource -Name $name -Version $required -Repository PSGallery -Scope CurrentUser -TrustRepository -AcceptLicense -Quiet
+              $null = Invoke-GalleryOperation -Description "Install $name $required from PSGallery" -Operation {
+                  Install-PSResource -Name $name -Version $required -Repository PSGallery -Scope CurrentUser -TrustRepository -AcceptLicense -Quiet
+              }
               $loaded = Import-Module -Name $name -RequiredVersion $required -PassThru -Force -ErrorAction Stop |
                   Sort-Object Version -Descending |
                   Select-Object -First 1

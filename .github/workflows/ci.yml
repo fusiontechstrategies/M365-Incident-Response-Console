@@ -76,7 +76,15 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Import-Module PSScriptAnalyzer -RequiredVersion 1.25.0
-          $findings = @(Invoke-ScriptAnalyzer -Path ./M365-IR-Console.ps1 -Severity Warning, Error)
+          $productionScripts = @(
+              Get-Item -LiteralPath ./M365-IR-Console.ps1
+              Get-ChildItem -Path ./scripts/*.ps1 -File
+          )
+          $findings = @(
+              foreach ($scriptFile in $productionScripts) {
+                  Invoke-ScriptAnalyzer -Path $scriptFile.FullName -Severity Warning, Error
+              }
+          )
           if ($findings.Count -gt 0) {
               $findings | Format-Table -Wrap -AutoSize
               throw "$($findings.Count) PSScriptAnalyzer finding(s) failed the build."

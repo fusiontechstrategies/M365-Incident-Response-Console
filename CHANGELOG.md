@@ -18,6 +18,8 @@ All notable project changes are documented here.
 - Added deterministic five-entry Gallery package construction, repeat-build
   comparison, discovery, extraction, and exact installed-script verification
   without public credentials
+- Added a deterministic five-minute synthetic-fixture walkthrough that runs
+  without cloud modules, authentication, or tenant access
 
 ### Changed
 
@@ -29,9 +31,12 @@ All notable project changes are documented here.
 - Preserved optional, platform-dependent, and operator-approved dependency
   installation rather than turning cloud modules into unconditional package
   dependencies
-- Updated the verified optional SharePoint Online module baseline to
-  `16.0.27612.12000` after publisher, signature, payload, import, command-source,
-  and secret-scan review
+- Updated the verified Exchange Online baseline to `3.11.1` and the optional
+  SharePoint Online baseline to `16.0.27814.12015`
+- Added bounded retry and backoff around PowerShell Gallery discovery and
+  installation so transient 5xx responses do not create false dependency drift
+- Expanded static analysis from the main executable to every production
+  PowerShell script in the repository
 
 ### Security
 
