@@ -141,7 +141,7 @@ $script:IRMinimumPowerShell = [version]'7.6.0'
 $script:IRScriptPath = $PSCommandPath
 $script:IRModuleCatalog = [ordered]@{
     ExchangeOnlineManagement = [ordered]@{
-        MinimumVersion = [version]'3.10.1'
+        MinimumVersion = [version]'3.11.1'
         Optional = $false
         Purpose = 'Exchange Online and Microsoft Purview connectivity'
     }
