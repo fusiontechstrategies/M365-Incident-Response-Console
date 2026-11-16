@@ -11,9 +11,9 @@
 [![PowerShell 7.6+](https://img.shields.io/badge/PowerShell-7.6%2B-5391FE?logo=powershell&logoColor=white)](https://github.com/PowerShell/PowerShell)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**Start here:** [Run the five-minute offline demo](#five-minute-evaluation-without-a-tenant) · [Download the tested v5.1.0 release asset](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/download/v5.1.0/M365-IR-Console.ps1) · [Preview a sanitized case report](examples/sanitized-case-report.md) · [Follow the safe lab guide](docs/lab-evaluation.md)
+**Start here:** [Run the five-minute offline demo](#five-minute-evaluation-without-a-tenant) · [Download the tested v5.1.1 release asset](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/download/v5.1.1/M365-IR-Console.ps1) · [Read the release notes](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/tag/v5.1.1) · [Preview a sanitized case report](examples/sanitized-case-report.md) · [Follow the safe lab guide](docs/lab-evaluation.md)
 
-> **Project status: maintained public release.** Version 5.1.0 is the current tested release. The complete automated suite is offline and never authenticates to a tenant; validate the exact licensed services and workflows you intend to use in an approved test tenant before production operation.
+> **Project status: maintained public release.** Version 5.1.1 is the current tested release. The complete automated suite is offline and never authenticates to a tenant; validate the exact licensed services and workflows you intend to use in an approved test tenant before production operation.
 
 M365 Incident Response Console is a one-file PowerShell application for Microsoft 365 investigation, guarded containment, forensic collection, remediation, and evidence integrity. It brings Microsoft Graph, Exchange Online, Purview, Teams, SharePoint, and local case handling into one interactive workflow.
 
@@ -114,11 +114,11 @@ Use `-InstallMissingModules` only after reviewing your organization's module-man
 
 ## Quick start
 
-Open PowerShell 7.6 or later, then copy and paste this block. It downloads the versioned v5.1.0 release asset and refuses to continue if its SHA-256 digest differs from the digest published by GitHub for that asset.
+Open PowerShell 7.6 or later, then copy and paste this block. It downloads the versioned v5.1.1 release asset and refuses to continue if its SHA-256 digest differs from the digest published for that asset.
 
 ```powershell
-$releaseUri = 'https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/download/v5.1.0/M365-IR-Console.ps1'
-$expectedSha256 = '0092D181A7EE0383D9F3C9B45CC55FAC583B2029CB168D59A3EB546DD0BE207A'
+$releaseUri = 'https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/download/v5.1.1/M365-IR-Console.ps1'
+$expectedSha256 = '8AEF86DD301B272EF6F796B460CBDA6838C11B48F4FCF7AC600A627CDD18B634'
 $destination = Join-Path -Path (Get-Location) -ChildPath 'M365-IR-Console.ps1'
 $download = "$destination.download"
 
@@ -142,7 +142,7 @@ pwsh -NoProfile -File .\M365-IR-Console.ps1 -OfflineSelfTest
 pwsh -NoProfile -File .\M365-IR-Console.ps1 -PreflightOnly
 ```
 
-The current release asset is not Authenticode-signed. The digest check above verifies the exact GitHub release asset; it does not establish publisher identity through a code-signing certificate. If organizational policy requires signed PowerShell, do not weaken execution policy. Use your approved internal signing process or wait for a signed release.
+The v5.1.1 release asset is not Authenticode-signed. The digest check above verifies the exact GitHub release asset; it does not establish publisher identity through a code-signing certificate. If organizational policy requires signed PowerShell, do not weaken execution policy. Use your approved internal signing process or wait for a signed release.
 
 For the first tenant-connected run, use a lab tenant and remain in the default Audit mode:
 
@@ -183,7 +183,7 @@ Run the non-authenticated prerequisite report:
 pwsh -File .\M365-IR-Console.ps1 -PreflightOnly
 ```
 
-No PowerShell Gallery package has been published. The repository's 5.1.1 candidate now includes valid Gallery metadata and isolated modern plus legacy package-consumer tests, but v5.1.0 remains the current public release. See the [Gallery release-readiness record](docs/powershell-gallery.md) for the verified package path and remaining signing, account, tenant, and publication gates.
+No PowerShell Gallery package has been published. The v5.1.1 GitHub release includes valid Gallery metadata and isolated modern plus legacy package-consumer tests, but Gallery publication remains a separate action. See the [Gallery release-readiness record](docs/powershell-gallery.md) for the verified package path and remaining signing, account, tenant, and publication gates.
 
 ## Case output
 
