@@ -260,6 +260,43 @@ Describe 'Public demo fixtures' {
         $report | Should -Match 'analyst-test@contoso\.example'
     }
 
+    It 'runs a deterministic tenant-free fixture walkthrough' {
+        $demoPath = Join-Path -Path $PSScriptRoot -ChildPath '..\scripts\Show-SanitizedFixture.ps1'
+        $output = @(& $demoPath) -join "`n"
+
+        $output | Should -Match 'Five-minute offline demo'
+        $output | Should -Match 'SYNTHETIC DATA ONLY'
+        $output | Should -Match 'No tenant connection'
+        $output | Should -Match 'Mode: Audit'
+        $output | Should -Match 'Unified audit log\s+Partial'
+        $output | Should -Match 'Defender mail detail\s+Unavailable'
+        $output | Should -Match 'Does not provide: tenant evidence'
+    }
+
+    It 'rejects a fixture whose synthetic marker is not Boolean true' {
+        $fixturePath = Join-Path -Path $PSScriptRoot -ChildPath '..\examples\sanitized-case-summary.json'
+        $demoPath = Join-Path -Path $PSScriptRoot -ChildPath '..\scripts\Show-SanitizedFixture.ps1'
+        $fixture = Get-Content -LiteralPath $fixturePath -Raw -Encoding utf8 |
+            ConvertFrom-Json -Depth 20 -DateKind String
+        $fixture.synthetic = 'true'
+        $invalidPath = Join-Path -Path $TestDrive -ChildPath 'non-boolean-synthetic.json'
+        $fixture | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $invalidPath -Encoding utf8
+
+        { & $demoPath -FixturePath $invalidPath } | Should -Throw '*not explicitly marked synthetic*'
+    }
+
+    It 'rejects a fixture that is not in Audit mode' {
+        $fixturePath = Join-Path -Path $PSScriptRoot -ChildPath '..\examples\sanitized-case-summary.json'
+        $demoPath = Join-Path -Path $PSScriptRoot -ChildPath '..\scripts\Show-SanitizedFixture.ps1'
+        $fixture = Get-Content -LiteralPath $fixturePath -Raw -Encoding utf8 |
+            ConvertFrom-Json -Depth 20 -DateKind String
+        $fixture.case.mode = 'Live'
+        $invalidPath = Join-Path -Path $TestDrive -ChildPath 'live-mode-fixture.json'
+        $fixture | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $invalidPath -Encoding utf8
+
+        { & $demoPath -FixturePath $invalidPath } | Should -Throw '*must remain in Audit mode*'
+    }
+
     It 'keeps the README fixture visual exact, local, and explicitly synthetic' {
         $repositoryRoot = Split-Path -Path $script:ScriptUnderTest -Parent
         $pngPath = Join-Path -Path $repositoryRoot -ChildPath 'docs\images\m365-sanitized-fixture-result.png'

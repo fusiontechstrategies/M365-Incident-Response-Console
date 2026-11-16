@@ -11,7 +11,7 @@
 [![PowerShell 7.6+](https://img.shields.io/badge/PowerShell-7.6%2B-5391FE?logo=powershell&logoColor=white)](https://github.com/PowerShell/PowerShell)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**Start here:** [Download the tested v5.1.0 release asset](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/download/v5.1.0/M365-IR-Console.ps1) · [Read the release notes](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/tag/v5.1.0) · [Preview a sanitized case report](examples/sanitized-case-report.md) · [Follow the safe lab guide](docs/lab-evaluation.md)
+**Start here:** [Run the five-minute offline demo](#five-minute-evaluation-without-a-tenant) · [Download the tested v5.1.0 release asset](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/download/v5.1.0/M365-IR-Console.ps1) · [Preview a sanitized case report](examples/sanitized-case-report.md) · [Follow the safe lab guide](docs/lab-evaluation.md)
 
 > **Project status: maintained public release.** Version 5.1.0 is the current tested release. The complete automated suite is offline and never authenticates to a tenant; validate the exact licensed services and workflows you intend to use in an approved test tenant before production operation.
 
@@ -19,11 +19,24 @@ M365 Incident Response Console is a one-file PowerShell application for Microsof
 
 The application starts in **Audit mode**. Audit mode blocks every tenant mutation and replaces reviewed Microsoft Graph write scopes with read-only scopes. **Live mode** must be selected explicitly, and every tenant-changing operation passes through a common gateway with `ShouldProcess`, an exact typed confirmation, and durable case logging.
 
-## Ten-minute evaluation without a tenant
+## Five-minute evaluation without a tenant
 
-1. Open the [sanitized case report](examples/sanitized-case-report.md) and its [structured summary](examples/sanitized-case-summary.json) to see the evidence and investigator decision queue first.
-2. Download the versioned release asset through the hash-verified [quick start](#quick-start), then run `-OfflineSelfTest` and `-PreflightOnly`. Neither command authenticates or changes a tenant.
-3. Follow the [safe lab guide](docs/lab-evaluation.md) before considering an approved test tenant. Keep Audit mode enabled until the investigation output, requested read scopes, licensing boundaries, and evidence location are understood.
+Clone or download the repository, then run the deterministic walkthrough:
+
+```powershell
+pwsh -NoProfile -File .\scripts\Show-SanitizedFixture.ps1
+```
+
+The walkthrough reads only the committed synthetic JSON fixture. It does not load cloud modules, authenticate, connect to Microsoft 365, or make a tenant change. It shows the collection coverage states and investigator decision queue that responders must resolve instead of turning missing evidence into a clean result.
+
+Then run the built-in safety checks and local prerequisite report:
+
+```powershell
+pwsh -NoProfile -File .\M365-IR-Console.ps1 -OfflineSelfTest
+pwsh -NoProfile -File .\M365-IR-Console.ps1 -PreflightOnly
+```
+
+Open the [sanitized case report](examples/sanitized-case-report.md) and [visual result](#sanitized-fixture-result), then follow the [safe lab guide](docs/lab-evaluation.md) before considering an approved test tenant. Keep Audit mode enabled until the investigation output, requested read scopes, licensing boundaries, and evidence location are understood.
 
 The first useful result is a reviewable case and an explicit list of unavailable or partial collectors, not a containment action. Live response remains a separate authorization decision.
 
@@ -88,7 +101,7 @@ Automated validation never authenticates to a tenant. Live-service behavior rema
 
 ### Current module baselines
 
-These versions were verified against the PowerShell Gallery on October 20, 2026.
+These versions were verified against the PowerShell Gallery on November 16, 2026.
 
 | Module family | Minimum version | Use |
 | --- | ---: | --- |
@@ -237,9 +250,9 @@ Audit mode replaces each reviewed write scope with a read-only alternative. An u
 The current source tree is validated with:
 
 - 22 deterministic built-in offline self-tests
-- 57 Pester 6.1.0 regression tests
+- 62 Pester regression tests, pinned to Pester 6.1.0 in CI
 - PowerShell parser validation
-- PSScriptAnalyzer 1.25.0 with zero warning or error findings
+- PSScriptAnalyzer 1.25.0 with zero warning or error findings across every production PowerShell script
 - Mutation-gateway and exact-confirmation AST checks
 - Windows ACL and Unix permission tests
 - Microsoft Graph scope downgrade tests
