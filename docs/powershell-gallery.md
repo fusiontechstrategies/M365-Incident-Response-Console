@@ -1,8 +1,8 @@
 # PowerShell Gallery release readiness
 
-Status: 5.1.1 candidate prepared, not published
+Status: 5.1.1 GitHub release published; PowerShell Gallery package not published
 
-M365 Incident Response Console is a good fit for the PowerShell Gallery's single-script package model. The current public release remains v5.1.0 on GitHub. Version 5.1.1 adds package metadata and isolated packaging tests without changing tenant behavior.
+M365 Incident Response Console is a good fit for the PowerShell Gallery's single-script package model. Version 5.1.1 is the current public GitHub release and adds package metadata and isolated packaging tests without changing tenant behavior. It has not been published to the PowerShell Gallery.
 
 Do not use a public Gallery publishing command until the maintainer explicitly authorizes the exact candidate, signing policy, Gallery account, API key use, tag, and publication.
 
@@ -93,7 +93,7 @@ Publishing is a separate external action. Complete every gate against one exact 
 11. Verify public script bytes, metadata, hash, signature status, `-OfflineSelfTest`, and `-PreflightOnly` before announcing it.
 12. Add the confirmed package owner and public Gallery link to the repository documentation.
 
-The current v5.1.0 GitHub release asset and the 5.1.1 repository candidate are not Authenticode-signed. Do not describe a package as publisher-signed unless its final public script passes `Get-AuthenticodeSignature` with the expected certificate and timestamp.
+The current v5.1.1 GitHub release asset is not Authenticode-signed. Do not describe a package as publisher-signed unless its final public script passes `Get-AuthenticodeSignature` with the expected certificate and timestamp.
 
 Official references:
 
