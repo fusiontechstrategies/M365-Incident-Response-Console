@@ -141,7 +141,7 @@ $script:IRMinimumPowerShell = [version]'7.6.0'
 $script:IRScriptPath = $PSCommandPath
 $script:IRModuleCatalog = [ordered]@{
     ExchangeOnlineManagement = [ordered]@{
-        MinimumVersion = [version]'3.10.1'
+        MinimumVersion = [version]'3.11.1'
         Optional = $false
         Purpose = 'Exchange Online and Microsoft Purview connectivity'
     }
@@ -201,7 +201,7 @@ $script:IRModuleCatalog = [ordered]@{
         Purpose = 'Teams membership and channel inventory'
     }
     'Microsoft.Online.SharePoint.PowerShell' = [ordered]@{
-        MinimumVersion = [version]'16.0.27709.12000'
+        MinimumVersion = [version]'16.0.27814.12015'
         Optional = $true
         Purpose = 'SharePoint Online site and user inventory'
     }
