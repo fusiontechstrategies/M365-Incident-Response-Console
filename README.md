@@ -11,9 +11,9 @@
 [![PowerShell 7.6+](https://img.shields.io/badge/PowerShell-7.6%2B-5391FE?logo=powershell&logoColor=white)](https://github.com/PowerShell/PowerShell)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**Start here:** [Run the five-minute offline demo](#five-minute-evaluation-without-a-tenant) · [Download the tested v5.1.1 release asset](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/download/v5.1.1/M365-IR-Console.ps1) · [Read the release notes](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/tag/v5.1.1) · [Preview a sanitized case report](examples/sanitized-case-report.md) · [Follow the safe lab guide](docs/lab-evaluation.md)
+**Start here:** [Download the v5.1.1 offline evaluation archive](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/archive/5f344acd244135e6139c3281dbf8b0a647eca4ab.zip) · [Run the five-minute offline demo](#five-minute-evaluation-without-a-tenant) · [Download the tested production script](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/releases/download/v5.1.1/M365-IR-Console.ps1) · [Preview a sanitized case report](examples/sanitized-case-report.md) · [Use the current investigation handoff](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/blob/main/examples/compromised-mailbox-handoff.md) · [Follow the safe lab guide](docs/lab-evaluation.md)
 
-> **Project status: maintained public release.** Version 5.1.1 is the current tested release. The complete automated suite is offline and never authenticates to a tenant; validate the exact licensed services and workflows you intend to use in an approved test tenant before production operation.
+Version 5.1.1 is the current tested release. Its automated suite runs offline and never authenticates to a tenant. Live operation remains a separate authorization decision: validate the exact licensed services and workflows you intend to use in an approved test tenant before production use.
 
 M365 Incident Response Console is a one-file PowerShell application for Microsoft 365 investigation, guarded containment, forensic collection, remediation, and evidence integrity. It brings Microsoft Graph, Exchange Online, Purview, Teams, SharePoint, and local case handling into one interactive workflow.
 
@@ -21,13 +21,15 @@ The application starts in **Audit mode**. Audit mode blocks every tenant mutatio
 
 ## Five-minute evaluation without a tenant
 
-Clone or download the repository, then run the deterministic walkthrough:
+Download and extract the [v5.1.1 evaluation archive pinned to its verified commit](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/archive/5f344acd244135e6139c3281dbf8b0a647eca4ab.zip), or clone the repository and check out commit `5f344acd244135e6139c3281dbf8b0a647eca4ab`. From the extracted directory, run the deterministic walkthrough:
 
 ```powershell
 pwsh -NoProfile -File .\scripts\Show-SanitizedFixture.ps1
 ```
 
 The walkthrough reads only the committed synthetic JSON fixture. It does not load cloud modules, authenticate, connect to Microsoft 365, or make a tenant change. It shows the collection coverage states and investigator decision queue that responders must resolve instead of turning missing evidence into a clean result.
+
+The evaluation archive contains the walkthrough script, its synthetic fixture, the sanitized case report, and the production console from the same verified release commit. The separate release asset is intentionally the one-file production console and does not contain the walkthrough fixture.
 
 Then run the built-in safety checks and local prerequisite report:
 
@@ -36,7 +38,7 @@ pwsh -NoProfile -File .\M365-IR-Console.ps1 -OfflineSelfTest
 pwsh -NoProfile -File .\M365-IR-Console.ps1 -PreflightOnly
 ```
 
-Open the [sanitized case report](examples/sanitized-case-report.md) and [visual result](#sanitized-fixture-result), then follow the [safe lab guide](docs/lab-evaluation.md) before considering an approved test tenant. Keep Audit mode enabled until the investigation output, requested read scopes, licensing boundaries, and evidence location are understood.
+Open the [sanitized case report](examples/sanitized-case-report.md), [current supplemental compromised-mailbox handoff](https://github.com/fusiontechstrategies/M365-Incident-Response-Console/blob/main/examples/compromised-mailbox-handoff.md), and [visual result](#sanitized-fixture-result), then follow the [safe lab guide](docs/lab-evaluation.md) before considering an approved test tenant. Keep Audit mode enabled until the investigation output, requested read scopes, licensing boundaries, and evidence location are understood.
 
 The first useful result is a reviewable case and an explicit list of unavailable or partial collectors, not a containment action. Live response remains a separate authorization decision.
 
