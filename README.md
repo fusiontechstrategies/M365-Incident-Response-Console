@@ -211,6 +211,8 @@ The [sanitized sample report](examples/sanitized-case-report.md) and its [machin
 
 The hash chain and manifest provide tamper evidence. They do not replace organizational evidence-handling procedures, trusted timestamps, digital signatures, or chain-of-custody requirements.
 
+For offline review, see the [portable case export and verifier](docs/portable-case.md) and its reproducible synthetic case.
+
 ### Sanitized fixture result
 
 ![Sanitized M365 Audit-mode fixture result showing completed, partial, and unavailable collection states; a four-item investigator decision queue; and the boundary between chained logs and SHA-256 manifests versus trusted timestamps, signatures, and organizational chain of custody.](docs/images/m365-sanitized-fixture-result.png)
