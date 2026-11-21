@@ -87,6 +87,14 @@ Adds offline case handoff assignment and acceptance, plus verified PowerShell Ga
 .PARAMETER HandoffCaseId
     ID of an existing case directly under OutputRoot.
 
+.PARAMETER DefenderIncidentId
+    Create and seal a new Audit case from one Defender incident. Supply the
+    source TenantId as a GUID and the mailbox UserPrincipalName explicitly.
+
+.PARAMETER DefenderFixturePath
+    Use a marked synthetic Defender fixture without contacting Microsoft 365.
+    Requires DefenderIncidentId and matching fixture identifiers.
+
 .PARAMETER SkipPreflight
     Skip the startup preflight. The connection menu can run it later.
 
@@ -145,7 +153,10 @@ param(
     [string]$HandoffDecision,
     [string]$HandoffAssignmentId,
     [string]$HandoffNote,
-    [string[]]$HandoffEvidence = @()
+    [string[]]$HandoffEvidence = @(),
+    [ValidatePattern('\A[A-Za-z0-9][A-Za-z0-9_-]{0,127}\z')]
+    [string]$DefenderIncidentId,
+    [string]$DefenderFixturePath
 )
 
 Set-StrictMode -Version 3.0
@@ -1808,6 +1819,171 @@ function Connect-IRGraph {
     $script:IR.TenantSelectionValidated = $true
     Write-IRSuccess "Graph connected as $($context.Account) to tenant $($context.TenantId)."
     return $context
+}
+
+function Read-IRDefenderFixture {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $fullPath = [IO.Path]::GetFullPath($Path, $PWD.ProviderPath)
+    if ($IsWindows -and $fullPath.StartsWith('\\')) { throw 'Use a local fixture file.' }
+    $file = Get-Item -LiteralPath $fullPath -Force
+    if ($file -isnot [IO.FileInfo] -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'A Defender fixture must be a local regular file.'
+    }
+    $stream = $file.Open([IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        if ($stream.Length -lt 2 -or $stream.Length -gt 1MB) {
+            throw 'A Defender fixture must contain at most 1 MiB of UTF-8 JSON.'
+        }
+        $bytes = [byte[]]::new([int]$stream.Length)
+        $stream.ReadExactly($bytes)
+        if ($stream.ReadByte() -ne -1) { throw 'The Defender fixture changed during the read.' }
+    }
+    finally {
+        $stream.Dispose()
+    }
+
+    $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes).TrimStart([char]0xFEFF)
+    $fixture = ConvertFrom-Json -InputObject $text -AsHashtable -Depth 24 -DateKind String -NoEnumerate
+    if ($fixture -isnot [System.Collections.IDictionary] -or
+        $fixture['schema'] -cne 'm365-ir-defender-fixture/v1' -or
+        $fixture['synthetic'] -isnot [bool] -or !$fixture['synthetic']) {
+        throw 'Use a Defender fixture with schema m365-ir-defender-fixture/v1 and Boolean synthetic set to true.'
+    }
+    return $fixture['incident']
+}
+
+function New-IRDefenderIncidentCase {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [ValidatePattern('\A[A-Za-z0-9][A-Za-z0-9_-]{0,127}\z')]
+        [string]$IncidentId,
+        [Parameter(Mandatory)][guid]$SourceTenantId,
+        [Parameter(Mandatory)][string]$MailboxUpn,
+        [ValidateNotNullOrEmpty()][string]$FixturePath
+    )
+
+    if ($SourceTenantId -eq [guid]::Empty) { throw 'Supply the source tenant GUID.' }
+    if (-not (Test-IRUpn -Value $MailboxUpn)) { throw 'Supply a valid mailbox UPN.' }
+    if ($script:IR.Mode -ne 'Audit') { throw 'Defender incident import requires Audit mode.' }
+    $synthetic = $PSBoundParameters.ContainsKey('FixturePath')
+    if ($synthetic -and [string]::IsNullOrWhiteSpace($FixturePath)) { throw 'Supply a local Defender fixture path.' }
+    if (!$synthetic -and $script:IR.NoAutoConnect) {
+        throw 'Defender import needs a Graph connection. Supply a synthetic fixture for offline use.'
+    }
+    if (!$PSCmdlet.ShouldProcess($IncidentId, 'Read the Defender incident and create a local Audit case')) { return }
+
+    $tenant = $SourceTenantId.ToString('D')
+    $requestUri = "https://graph.microsoft.com/v1.0/security/incidents/$IncidentId"
+    $httpStatus = $null
+    $status = 'Imported'
+    $limitation = $null
+    $source = $null
+    if ($synthetic) {
+        $source = Read-IRDefenderFixture -Path $FixturePath
+    }
+    else {
+        $script:IR.TenantId = $tenant
+        $context = Connect-IRGraph -Scopes @('SecurityIncident.Read.All') -Modules @()
+        $activeTenant = [guid]::Empty
+        if (![guid]::TryParse([string](Get-IRProperty $context 'TenantId'), [ref]$activeTenant) -or
+            $activeTenant -ne $SourceTenantId -or (Get-IRProperty $context 'AuthType') -ne 'Delegated' -or
+            (Get-IRProperty $context 'Environment') -ne 'Global' -or
+            'SecurityIncident.Read.All' -notin @(Get-IRProperty $context 'Scopes') -or
+            @(Get-IRProperty $context 'Scopes' | Where-Object { Test-IRGraphWriteScope -Scope $_ }).Count) {
+            throw 'Defender import requires a delegated Microsoft Graph Global context for the exact tenant with SecurityIncident.Read.All and read-only scopes.'
+        }
+
+        try {
+            $json = Invoke-IRRetry -MaximumAttempts 3 -Operation {
+                Invoke-MgGraphRequest -Method GET -Uri $requestUri -OutputType Json -ErrorAction Stop
+            }
+        }
+        catch {
+            $httpStatus = Get-IRHttpStatusCode -ErrorRecord $_
+            $status = 'Unavailable'
+            $limitation = switch ($httpStatus) {
+                403 { 'Microsoft Graph denied incident access. Check Defender licensing, role, and consent.' }
+                404 { 'Microsoft Graph did not return an incident for this tenant and ID.' }
+                default { 'The Microsoft Graph incident request did not complete.' }
+            }
+        }
+        if ($status -eq 'Imported') {
+            if ($json -isnot [string] -or [Text.Encoding]::UTF8.GetByteCount($json) -gt 1MB) {
+                throw 'Microsoft Graph returned an invalid or oversized incident response.'
+            }
+            $source = ConvertFrom-Json -InputObject $json -AsHashtable -Depth 24 -DateKind String -NoEnumerate
+            $httpStatus = 200
+        }
+    }
+
+    $incident = $null
+    if ($status -eq 'Imported') {
+        if ($source -isnot [System.Collections.IDictionary] -or
+            $source['id'] -isnot [string] -or $source['id'] -cne $IncidentId) {
+            throw 'The returned incident did not exactly match the requested ID.'
+        }
+        $responseTenant = [guid]::Empty
+        if ($source['tenantId'] -isnot [string] -or
+            ![guid]::TryParseExact($source['tenantId'], 'D', [ref]$responseTenant) -or $responseTenant -ne $SourceTenantId) {
+            throw 'The incident did not match the requested source tenant.'
+        }
+        $incident = [ordered]@{ id = $IncidentId }
+        foreach ($name in @('displayName', 'description', 'severity', 'status', 'createdDateTime', 'lastUpdateDateTime', 'incidentWebUrl', 'redirectIncidentId')) {
+            $value = $source[$name]
+            $incident[$name] = if ($value -is [string] -and ![string]::IsNullOrWhiteSpace($value)) { $value }
+        }
+        $limitation = @(if ($incident['redirectIncidentId']) {
+            'Defender reported a redirect. The case references the original incident only.'
+        }
+        if (!$incident['createdDateTime'] -or !$incident['lastUpdateDateTime']) {
+            'Defender did not return all source timestamps.'
+        }) -join ' '
+    }
+
+    $script:IR.TenantId = $tenant
+    $script:IR.TargetUpn = $MailboxUpn.Trim().ToLowerInvariant()
+    $null = Initialize-IRCase -ForceNew
+    $import = [pscustomobject][ordered]@{
+        Schema = 'm365-ir-defender-incident/v1'
+        CaseId = $script:IR.CaseId
+        MailboxUpn = $script:IR.TargetUpn
+        Source = if ($synthetic) { 'Synthetic fixture' } else { 'Microsoft Graph v1.0' }
+        Synthetic = $synthetic
+        SourceTenantId = $tenant
+        RequestedIncidentId = $IncidentId
+        RetrievedUtc = [datetime]::UtcNow.ToString('o')
+        SourceUri = if (!$synthetic) { $requestUri }
+        HttpStatus = $httpStatus
+        Status = $status
+        Limitation = $limitation
+        AlertCoverage = 'Alert evidence was not collected.'
+        MailboxCoverage = 'The mailbox was specified by the operator. Its relationship to the incident was not verified.'
+        Incident = $incident
+    }
+    $evidence = Export-IRData -Data @($import) -BaseName 'defender-incident' -Format Json
+    $script:IR.Results['DefenderIncidentImport'] = $import
+    $script:IR.Results['DefenderIncidentEvidence'] = [IO.Path]::GetRelativePath($script:IR.CasePath, $evidence)
+    $null = Add-IRActionLog -Action 'Read Defender incident for case intake' -Status $(if ($status -eq 'Imported') { 'Read' } else { 'Error' }) -Target $IncidentId -Details @{
+        SourceTenantId = $tenant; Synthetic = $synthetic; HttpStatus = $httpStatus
+    } -RequireDurable
+    $coverage = [pscustomobject]@{
+        Component = 'Defender incident'
+        Status = if ($status -eq 'Imported') { 'Partial' } else { 'Failed' }
+    }
+    $report = New-IRCaseReport -CollectionStatus @($coverage)
+    $manifest = New-IREvidenceManifest
+    if ($status -eq 'Unavailable') { Write-IRWarn $limitation }
+    return [pscustomobject]@{
+        CaseId = $script:IR.CaseId
+        CasePath = $script:IR.CasePath
+        Status = $status
+        Synthetic = $synthetic
+        ReportPath = $report
+        EvidencePath = $evidence
+        ManifestPath = $manifest.JsonPath
+    }
 }
 
 function Test-IRExchangeConnected {
@@ -5268,7 +5444,8 @@ function New-IRCaseReport {
     if ($null -ne $CollectionStatus) { $statusRows = @($CollectionStatus) }
     $actions = @($script:IR.ActionLog)
     $actionLogChain = Test-IRActionLogChain
-    $connections = Get-IRConnectionStatus
+    $defenderImport = Get-IRProperty -InputObject $script:IR.Results -Name 'DefenderIncidentImport'
+    $connections = if (!$defenderImport) { Get-IRConnectionStatus }
     $builder = [System.Text.StringBuilder]::new()
     $null = $builder.AppendLine('<!doctype html><html lang="en"><head><meta charset="utf-8">')
     $null = $builder.AppendLine('<meta name="viewport" content="width=device-width,initial-scale=1">')
@@ -5290,6 +5467,37 @@ function New-IRCaseReport {
         }
     } catch {
         $null = $builder.AppendLine('<p>Handoff history could not be verified. Use the offline handoff command to inspect it.</p>')
+    }
+
+    if ($defenderImport) {
+        $null = $builder.AppendLine('<h2>Defender incident intake</h2>')
+        if ($defenderImport.Synthetic) {
+            $null = $builder.AppendLine('<p><strong>Synthetic fixture. No Microsoft 365 data was collected.</strong></p>')
+        }
+        $intakeFields = [ordered]@{
+            'Source' = $defenderImport.Source
+            'Source tenant' = $defenderImport.SourceTenantId
+            'Requested incident' = $defenderImport.RequestedIncidentId
+            'Intake status' = $defenderImport.Status
+            'Retrieved UTC' = $defenderImport.RetrievedUtc
+            'Source created' = Get-IRProperty $defenderImport.Incident 'createdDateTime'
+            'Source last updated' = Get-IRProperty $defenderImport.Incident 'lastUpdateDateTime'
+            'Title' = Get-IRProperty $defenderImport.Incident 'displayName'
+            'Severity' = Get-IRProperty $defenderImport.Incident 'severity'
+            'Portal reference' = Get-IRProperty $defenderImport.Incident 'incidentWebUrl'
+            'Limitation' = $defenderImport.Limitation
+            'Alert coverage' = $defenderImport.AlertCoverage
+            'Mailbox coverage' = $defenderImport.MailboxCoverage
+            'Local evidence' = $script:IR.Results['DefenderIncidentEvidence']
+        }
+        $null = $builder.AppendLine('<dl>')
+        foreach ($field in $intakeFields.GetEnumerator()) {
+            if ($field.Value) {
+                $null = $builder.AppendLine(('<dt>{0}</dt><dd>{1}</dd>' -f
+                    (ConvertTo-IRHtml $field.Key), (ConvertTo-IRHtml $field.Value)))
+            }
+        }
+        $null = $builder.AppendLine('</dl>')
     }
 
     $null = $builder.AppendLine('<h2>Collection status</h2><table><thead><tr><th>Component</th><th>Status</th><th>Duration (s)</th><th>Error / limitation</th></tr></thead><tbody>')
@@ -5344,20 +5552,25 @@ function New-IRCaseReport {
     $policyStatus = @(Get-IRProperty -InputObject $policySnapshot -Name 'Status' -Default @())
 
     $null = $builder.AppendLine('<h2>Investigator summary</h2>')
-    $null = $builder.AppendLine('<table><thead><tr><th>Evidence area</th><th>Observed result</th><th>Investigator significance</th></tr></thead><tbody>')
-    $summaryRows = @(
-        @('Message trace', "$($messageRows.Count) rows; $([int](Get-IRProperty -InputObject $messageAnalysis -Name 'SentRows' -Default 0)) sent; $([int](Get-IRProperty -InputObject $messageAnalysis -Name 'ReceivedRows' -Default 0)) received; $(@(Get-IRProperty -InputObject $messageAnalysis -Name 'Anomalies' -Default @()).Count) heuristic leads", 'Pivot by message and trace identifiers; validate external, large, repeated-subject, and after-hours leads.'),
-        @('Unified audit', "$($auditEvents.Count) events; $($auditFindings.Count) triage indicators", 'Correlate high-risk, partial, deletion, and after-hours operations with known activity.'),
-        @('Defender mail detail', "$($defenderRows.Count) rows; $($threatHeuristics.Count) additional message leads", 'Review verdict, delivery location, remediation, and user interaction.'),
-        @('Mailbox configuration', "$($inboxRules.Count) rules; $($mailboxApplications.Count) applications; $($folderErrors.Count) folder errors; $($skippedFolders.Count) service-internal exclusions", 'Validate forwarding, delegation, hidden rules, applications, and permissions.'),
-        @('Identity and applications', "$($oauthGrants.Count) OAuth grants; $($appRoleAssignments.Count) app-role assignments; $($signIns.Count) sign-ins; $($authenticationMethods.Count) authentication methods; $($riskyUsers.Count) risk-status records; $($identityErrors.Count) coverage errors", 'Validate consent provenance, least privilege, authentication outcomes, registered methods, risk state, and missing evidence.'),
-        @('Devices', "$($exchangeDevices.Count) Exchange devices; $($intuneDevices.Count) Intune devices; $($deviceErrors.Count) coverage errors", 'Confirm ownership, access state, management, and stale partnerships.'),
-        @('Security policies', "$(@($policyStatus | Where-Object Status -eq 'Collected').Count) collected; $(@($policyStatus | Where-Object Status -ne 'Collected').Count) unavailable or failed", 'Assess effective precedence and record license/role/service limitations.')
-    )
-    foreach ($row in $summaryRows) {
-        $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f (ConvertTo-IRHtml $row[0]), (ConvertTo-IRHtml $row[1]), (ConvertTo-IRHtml $row[2])))
+    if ($defenderImport) {
+        $null = $builder.AppendLine('<p>This intake covers the requested Defender incident only. Mailbox, identity, device, policy, and audit evidence still require separate collection.</p>')
     }
-    $null = $builder.AppendLine('</tbody></table>')
+    else {
+        $null = $builder.AppendLine('<table><thead><tr><th>Evidence area</th><th>Observed result</th><th>Investigator significance</th></tr></thead><tbody>')
+        $summaryRows = @(
+            @('Message trace', "$($messageRows.Count) rows; $([int](Get-IRProperty -InputObject $messageAnalysis -Name 'SentRows' -Default 0)) sent; $([int](Get-IRProperty -InputObject $messageAnalysis -Name 'ReceivedRows' -Default 0)) received; $(@(Get-IRProperty -InputObject $messageAnalysis -Name 'Anomalies' -Default @()).Count) heuristic leads", 'Pivot by message and trace identifiers; validate external, large, repeated-subject, and after-hours leads.'),
+            @('Unified audit', "$($auditEvents.Count) events; $($auditFindings.Count) triage indicators", 'Correlate high-risk, partial, deletion, and after-hours operations with known activity.'),
+            @('Defender mail detail', "$($defenderRows.Count) rows; $($threatHeuristics.Count) additional message leads", 'Review verdict, delivery location, remediation, and user interaction.'),
+            @('Mailbox configuration', "$($inboxRules.Count) rules; $($mailboxApplications.Count) applications; $($folderErrors.Count) folder errors; $($skippedFolders.Count) service-internal exclusions", 'Validate forwarding, delegation, hidden rules, applications, and permissions.'),
+            @('Identity and applications', "$($oauthGrants.Count) OAuth grants; $($appRoleAssignments.Count) app-role assignments; $($signIns.Count) sign-ins; $($authenticationMethods.Count) authentication methods; $($riskyUsers.Count) risk-status records; $($identityErrors.Count) coverage errors", 'Validate consent provenance, least privilege, authentication outcomes, registered methods, risk state, and missing evidence.'),
+            @('Devices', "$($exchangeDevices.Count) Exchange devices; $($intuneDevices.Count) Intune devices; $($deviceErrors.Count) coverage errors", 'Confirm ownership, access state, management, and stale partnerships.'),
+            @('Security policies', "$(@($policyStatus | Where-Object Status -eq 'Collected').Count) collected; $(@($policyStatus | Where-Object Status -ne 'Collected').Count) unavailable or failed", 'Assess effective precedence and record license/role/service limitations.')
+        )
+        foreach ($row in $summaryRows) {
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f (ConvertTo-IRHtml $row[0]), (ConvertTo-IRHtml $row[1]), (ConvertTo-IRHtml $row[2])))
+        }
+        $null = $builder.AppendLine('</tbody></table>')
+    }
 
     if ($mailboxSummary) {
         $delegates = ConvertTo-IRDisplayString -Value (Get-IRProperty -InputObject $mailboxSummary -Name 'GrantSendOnBehalfTo')
@@ -5542,11 +5755,13 @@ function New-IRCaseReport {
     $null = $builder.AppendLine('<h2>Investigator decision framework</h2>')
     $null = $builder.AppendLine('<ul><li>Validate mailbox forwarding, delegation, hidden rules, applications, and authentication methods against approved state.</li><li>Correlate Defender verdicts with final delivery location, remediation, clicks, and endpoint evidence.</li><li>Prioritize large external messages, after-hours sending, high-risk audit operations, and failed/partial source records.</li><li>Identify every OAuth client, publisher, consent actor, consent time, last use, and business owner before revocation.</li><li>Treat missing licensed workloads as coverage limitations, never as clean evidence.</li><li>Preserve the source exports and regenerate the evidence manifest after adding trusted external evidence.</li></ul>')
 
-    $null = $builder.AppendLine('<h2>Service connections</h2><table><thead><tr><th>Service</th><th>Connected</th><th>Identity</th></tr></thead><tbody>')
-    foreach ($row in @($connections)) {
-        $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f (ConvertTo-IRHtml $row.Service), (ConvertTo-IRHtml $row.Connected), (ConvertTo-IRHtml (Get-IRProperty -InputObject $row -Name 'Identity'))))
+    if (!$defenderImport) {
+        $null = $builder.AppendLine('<h2>Service connections</h2><table><thead><tr><th>Service</th><th>Connected</th><th>Identity</th></tr></thead><tbody>')
+        foreach ($row in @($connections)) {
+            $null = $builder.AppendLine(('<tr><td>{0}</td><td>{1}</td><td>{2}</td></tr>' -f (ConvertTo-IRHtml $row.Service), (ConvertTo-IRHtml $row.Connected), (ConvertTo-IRHtml (Get-IRProperty -InputObject $row -Name 'Identity'))))
+        }
+        $null = $builder.AppendLine('</tbody></table>')
     }
-    $null = $builder.AppendLine('</tbody></table>')
 
     $null = $builder.AppendLine('<h2>Recorded actions</h2><table><thead><tr><th>Sequence</th><th>UTC</th><th>Status</th><th>Action</th><th>Target</th><th>Details</th><th>Entry hash</th></tr></thead><tbody>')
     foreach ($entry in $actions) {
@@ -6696,6 +6911,21 @@ function Start-IRInteractiveConsole {
 
 # Script entry point. Dot-sourcing exposes functions without starting the UI.
 $script:IR.Interactive = $MyInvocation.InvocationName -ne '.'
+if ($PSBoundParameters.ContainsKey('DefenderIncidentId') -or $PSBoundParameters.ContainsKey('DefenderFixturePath')) {
+    if (!$DefenderIncidentId) { throw 'Supply -DefenderIncidentId for Defender intake.' }
+    if ($OfflineSelfTest -or $PreflightOnly -or $CaseHandoff -or @($PSBoundParameters.Keys -like 'Handoff*').Count) {
+        throw 'Run Defender intake as a separate command.'
+    }
+    $sourceTenant = [guid]::Empty
+    if (![guid]::TryParseExact($TenantId, 'D', [ref]$sourceTenant) -or $sourceTenant -eq [guid]::Empty) {
+        throw 'Supply the source tenant GUID using -TenantId.'
+    }
+    if ([string]::IsNullOrWhiteSpace($UserPrincipalName)) { throw 'Supply the mailbox using -UserPrincipalName.' }
+    $intake = @{ IncidentId = $DefenderIncidentId; SourceTenantId = $sourceTenant; MailboxUpn = $UserPrincipalName }
+    if ($PSBoundParameters.ContainsKey('DefenderFixturePath')) { $intake.FixturePath = $DefenderFixturePath }
+    New-IRDefenderIncidentCase @intake
+    return
+}
 if ($OfflineSelfTest) {
     $report = Invoke-IROfflineSelfTest
     Show-IROfflineSelfTest -Report $report

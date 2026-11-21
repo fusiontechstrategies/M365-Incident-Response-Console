@@ -1,0 +1,15 @@
+{
+  "schema": "m365-ir-defender-fixture/v1",
+  "synthetic": true,
+  "incident": {
+    "id": "42",
+    "tenantId": "11111111-1111-1111-1111-111111111111",
+    "displayName": "Synthetic mailbox investigation",
+    "description": "Demonstration incident with no collected alerts or tenant data.",
+    "severity": "medium",
+    "status": "active",
+    "createdDateTime": "2026-01-15T13:00:00Z",
+    "lastUpdateDateTime": "2026-01-15T13:15:00Z",
+    "incidentWebUrl": "https://defender.example.invalid/incidents/42"
+  }
+}

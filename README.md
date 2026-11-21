@@ -219,6 +219,25 @@ Constructed fixture, not tenant evidence. Completed, partial, and unavailable co
 
 ## Microsoft Graph scopes
 
+### Start a case from a Defender incident
+
+From a fresh PowerShell 7.6 process, supply the Microsoft Entra tenant GUID, the incident ID, and the mailbox you intend to investigate. The command creates a new local Audit case with a Defender evidence export, an HTML report, and a SHA-256 manifest. The import covers incident metadata. The report identifies missing timestamps or a redirect, and records that alert evidence and mailbox correlation still need investigation.
+
+Try the same case workflow offline from the repository root:
+
+```powershell
+pwsh -NoProfile -File ./M365-IR-Console.ps1 `
+    -TenantId 11111111-1111-1111-1111-111111111111 `
+    -DefenderIncidentId 42 -UserPrincipalName analyst@contoso.example `
+    -DefenderFixturePath ./examples/synthetic-defender-incident.json -NoAutoConnect
+```
+
+For an approved lab, use the same command with your authorized tenant GUID, incident ID, and mailbox. Omit `-DefenderFixturePath` and `-NoAutoConnect`. The import uses Microsoft Graph Global with delegated `SecurityIncident.Read.All`. The user needs access to the incident, for example through the Security Reader role. The requested ID and tenant must match the response. CI covers synthetic and mocked service responses. Verify access and coverage in your lab before relying on tenant data. [Microsoft Graph incident API](https://learn.microsoft.com/en-us/graph/api/security-incident-get?view=graph-rest-1.0)
+
+Use the returned case ID and output root with the [offline investigator handoff](examples/compromised-mailbox-handoff.md) to assign the next decision.
+
+### Delegated scopes
+
 The console requests delegated scopes as individual workflows need them. Common read scopes include:
 
 - `User.Read.All`
