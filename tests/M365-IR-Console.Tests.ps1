@@ -880,6 +880,88 @@ Describe 'Investigator case report' {
     }
 }
 
+Describe 'Offline investigator handoff' {
+    It 'reopens the same synthetic case and preserves the sealed evidence across two investigators' {
+        $casePath = New-IRTestCase
+        $caseId = $script:IR.CaseId
+        Set-Content -LiteralPath (Join-Path $casePath 'inbox-rule.txt') -Value 'Synthetic invoice rule'
+        $null = New-IREvidenceManifest -Confirm:$false
+        $powershell = (Get-Process -Id $PID).Path
+        $common = @('-NoProfile', '-File', $script:ScriptUnderTest, '-OutputRoot', $script:CaseOutputRoot, '-HandoffCaseId', $caseId)
+        $assigned = Set-IRCaseHandoff -CaseId $caseId -Operation Assign -Investigator 'Jordan' -Recipient 'Alex' `
+            -Decision 'Confirm the invoice rule with its owner' -Evidence 'inbox-rule.txt' -Confirm:$false
+        $assigned.Status | Should -BeExactly 'Awaiting acceptance'
+        Reset-IRTestState
+        $pendingReport = & $powershell @common -CaseHandoff Report
+        $LASTEXITCODE | Should -Be 0
+        ($pendingReport -join "`n") | Should -Match 'Awaiting acceptance'
+        $null = & $powershell @common -CaseHandoff Accept -HandoffInvestigator Alex -HandoffAssignmentId $assigned.Current.AssignmentId -HandoffNote '<Review with owner>'
+        $LASTEXITCODE | Should -Be 0
+        $accepted = Get-IRCaseHandoff -CaseId $caseId
+        $accepted.Status | Should -BeExactly 'Accepted'
+        $accepted.Events.Count | Should -Be 2
+        $accepted.Current.IdentitySource | Should -BeExactly 'Operator-entered'
+        $accepted.Current.TimestampUtc | Should -Match 'Z$'
+        $accepted.Current.Decision | Should -BeExactly 'Confirm the invoice rule with its owner'
+        $rendered = (& $powershell @common -CaseHandoff Report) -join "`n"
+        $LASTEXITCODE | Should -Be 0
+        $rendered | Should -Match '&lt;Review with owner&gt;'
+        $rendered | Should -Match 'inbox-rule\.txt'
+        $script:IR.CasePath = $casePath
+        $script:IR.CaseId = $caseId
+        (Test-IREvidenceManifest).IsValid | Should -BeTrue
+    }
+
+    It 'rejects stale, duplicate, and wrong-recipient acceptance' {
+        $null = New-IRTestCase
+        $caseId = $script:IR.CaseId
+        $offer = Set-IRCaseHandoff -Operation Assign -CaseId $caseId -Investigator 'Jordan' -Recipient 'Alex' -Decision 'Confirm the inbox rule' -Confirm:$false
+        $oldId = $offer.Current.AssignmentId
+        { Set-IRCaseHandoff -Operation Accept -CaseId $caseId -Investigator 'Sam' -AssignmentId $oldId -Confirm:$false } | Should -Throw '*match the pending handoff*'
+        $null = Set-IRCaseHandoff -Operation Accept -CaseId $caseId -Investigator 'Alex' -AssignmentId $oldId -Confirm:$false
+        { Set-IRCaseHandoff -Operation Accept -CaseId $caseId -Investigator 'Alex' -AssignmentId $oldId -Confirm:$false } | Should -Throw '*match the pending handoff*'
+        $null = Set-IRCaseHandoff -Operation Assign -CaseId $caseId -Investigator 'Alex' -Recipient 'Jordan' -Decision 'Review collection gaps' -Confirm:$false
+        { Set-IRCaseHandoff -Operation Accept -CaseId $caseId -Investigator 'Jordan' -AssignmentId $oldId -Confirm:$false } | Should -Throw '*match the pending handoff*'
+        (Get-IRCaseHandoff -CaseId $caseId).Events.Count | Should -Be 3
+    }
+
+    It 'rejects tampered history and unsafe references and honors WhatIf' {
+        $casePath = New-IRTestCase
+        $caseId = $script:IR.CaseId
+        $argsForAssignment = @{ CaseId = $caseId; Operation = 'Assign'; Investigator = 'Jordan'; Recipient = 'Alex'; Decision = 'Confirm the inbox rule' }
+        { Set-IRCaseHandoff @argsForAssignment -Evidence '../outside.txt' -Confirm:$false } | Should -Throw '*relative file names*'
+        $outside = Join-Path $TestDrive 'external-evidence'
+        $null = New-Item -ItemType Directory -Path $outside
+        Set-Content -LiteralPath (Join-Path $outside 'sample.txt') -Value 'Synthetic file outside the case'
+        $linkType = if ($IsWindows) { 'Junction' } else { 'SymbolicLink' }
+        $null = New-Item -ItemType $linkType -Path (Join-Path $casePath 'external') -Target $outside
+        { Set-IRCaseHandoff @argsForAssignment -Evidence 'external/sample.txt' -Confirm:$false } | Should -Throw '*symbolic link or junction*'
+        $null = Set-IRCaseHandoff @argsForAssignment -WhatIf
+        (Get-IRCaseHandoff -CaseId $caseId).Status | Should -BeExactly 'Unassigned'
+        $case = Get-IRHandoffCase -CaseId $caseId
+        Test-Path -LiteralPath $case.Directory | Should -BeFalse
+        $null = Set-IRCaseHandoff @argsForAssignment -Confirm:$false
+        $raw = Get-Content -LiteralPath $case.Journal -Raw
+        Set-Content -LiteralPath $case.Journal -Value ($raw.Replace('Confirm the inbox rule', 'Ignore the inbox rule'))
+        { Get-IRCaseHandoff -CaseId $caseId } | Should -Throw '*integrity check failed*'
+    }
+
+    It 'supersedes a pending assignment only by its exact ID and preserves the earlier event' {
+        $null = New-IRTestCase
+        $caseId = $script:IR.CaseId
+        $original = Set-IRCaseHandoff -Operation Assign -CaseId $caseId -Investigator 'Jordan' -Recipient 'Alex' -Decision 'Review coverage' -Confirm:$false
+        $oldId = $original.Current.AssignmentId
+        $replacement = @{ CaseId = $caseId; Operation = 'Assign'; Investigator = 'Jordan'; Recipient = 'Sam'; Decision = 'Confirm mailbox rule' }
+        { Set-IRCaseHandoff @replacement -Confirm:$false } | Should -Throw '*exact assignment ID*'
+        $reassigned = Set-IRCaseHandoff @replacement -AssignmentId $oldId -Confirm:$false
+        $reassigned.Current.ReplacesAssignmentId | Should -BeExactly $oldId
+        { Set-IRCaseHandoff -Operation Accept -CaseId $caseId -Investigator 'Alex' -AssignmentId $oldId -Confirm:$false } | Should -Throw '*match the pending handoff*'
+        $accepted = Set-IRCaseHandoff -Operation Accept -CaseId $caseId -Investigator 'Sam' -AssignmentId $reassigned.Current.AssignmentId -Confirm:$false
+        $accepted.Status | Should -BeExactly 'Accepted'
+        $accepted.Events.Count | Should -Be 3
+    }
+}
+
 Describe 'Evidence action log and manifest integrity' {
     It 'neutralizes spreadsheet formulas in CSV evidence without changing numbers' {
         $null = New-IRTestCase
