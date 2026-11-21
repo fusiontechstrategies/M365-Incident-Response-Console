@@ -2,6 +2,7 @@
 
 [CmdletBinding()]
 param(
+    [string]$ScriptPath = (Join-Path -Path $PSScriptRoot -ChildPath '..\M365-IR-Console.ps1'),
     [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string]$OutputRoot
@@ -11,8 +12,7 @@ Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..'))
-$scriptPath = Join-Path -Path $repositoryRoot -ChildPath 'M365-IR-Console.ps1'
+$scriptPath = [System.IO.Path]::GetFullPath($ScriptPath)
 $outputPath = [System.IO.Path]::GetFullPath($OutputRoot)
 
 if (Test-Path -LiteralPath $outputPath) {
@@ -73,12 +73,15 @@ try {
         throw 'PSResourceGet rejected the PSScriptInfo metadata.'
     }
 
-    $packageName = 'M365-IR-Console.5.1.1.nupkg'
+    Import-Module PowerShellGet -RequiredVersion 2.2.5 -ErrorAction Stop
+    $legacyInfo = Test-ScriptFileInfo -Path $scriptPath
+    $version = $legacyInfo.Version.ToString()
+    $packageName = "M365-IR-Console.$version.nupkg"
     $packageA = Join-Path -Path $packagePathA -ChildPath $packageName
     $packageB = Join-Path -Path $packagePathB -ChildPath $packageName
     $builder = Join-Path -Path $PSScriptRoot -ChildPath 'New-DeterministicGalleryPackage.ps1'
-    $createdA = @(& $builder -ScriptPath $scriptPath -OutputPath $packageA)
-    $createdB = @(& $builder -ScriptPath $scriptPath -OutputPath $packageB)
+    $createdA = @(& $builder -ScriptPath $scriptPath -ExpectedVersion $version -OutputPath $packageA)
+    $createdB = @(& $builder -ScriptPath $scriptPath -ExpectedVersion $version -OutputPath $packageB)
     if ($createdA.Count -ne 1 -or $createdB.Count -ne 1 -or
         -not (Test-Path -LiteralPath $packageA) -or -not (Test-Path -LiteralPath $packageB)) {
         throw 'Expected exactly one package from each independent build.'
@@ -157,7 +160,7 @@ try {
     if ([string]$metadata.id -cne 'M365-IR-Console') {
         throw "Unexpected package id: $($metadata.id)"
     }
-    if ([string]$metadata.version -cne '5.1.1') {
+    if ([string]$metadata.version -cne $version) {
         throw "Unexpected package version: $($metadata.version)"
     }
     if ([string]$metadata.authors -cne 'Jeffrey Friedler') {
@@ -193,19 +196,17 @@ try {
         (Get-FileSha256 -Path $publishedPackages[0].FullName) -cne (Get-FileSha256 -Path $nupkg.FullName)) {
         throw 'Local publish did not preserve the exact package bytes.'
     }
-    $modern = Find-PSResource -Name M365-IR-Console -Version 5.1.1 -Repository $modernRepository
+    $modern = Find-PSResource -Name M365-IR-Console -Version $version -Repository $modernRepository
     if ($modern.Type -ne 'Script') {
         throw "Modern discovery returned unexpected type '$($modern.Type)'."
     }
-    Save-PSResource -Name M365-IR-Console -Version 5.1.1 -Repository $modernRepository -Path $modernSavePath -IncludeXml -TrustRepository
+    Save-PSResource -Name M365-IR-Console -Version $version -Repository $modernRepository -Path $modernSavePath -IncludeXml -TrustRepository
     $modernScript = @(Get-ChildItem -LiteralPath $modernSavePath -Recurse -File -Filter 'M365-IR-Console.ps1')
     if ($modernScript.Count -ne 1 -or (Get-FileSha256 -Path $modernScript[0].FullName) -cne (Get-FileSha256 -Path $scriptPath)) {
         throw 'Modern saved script is missing or differs from source.'
     }
     Remove-ValidationRepository -Name $modernRepository -Kind Modern
 
-    Import-Module PowerShellGet -RequiredVersion 2.2.5 -ErrorAction Stop
-    $legacyInfo = Test-ScriptFileInfo -Path $scriptPath
     $expectedExternalModules = @(
         'ExchangeOnlineManagement'
         'Microsoft.Graph.Authentication'
@@ -229,11 +230,11 @@ try {
     }
 
     Register-PSRepository -Name $legacyRepository -SourceLocation $feedPath -PublishLocation $feedPath -InstallationPolicy Trusted
-    $legacy = Find-Script -Name M365-IR-Console -RequiredVersion 5.1.1 -Repository $legacyRepository
+    $legacy = Find-Script -Name M365-IR-Console -RequiredVersion $version -Repository $legacyRepository
     if ($legacy.Type -ne 'Script') {
         throw "Legacy discovery returned unexpected type '$($legacy.Type)'."
     }
-    Save-Script -Name M365-IR-Console -RequiredVersion 5.1.1 -Repository $legacyRepository -Path $legacySavePath -Force
+    Save-Script -Name M365-IR-Console -RequiredVersion $version -Repository $legacyRepository -Path $legacySavePath -Force
     $legacyScript = Join-Path -Path $legacySavePath -ChildPath 'M365-IR-Console.ps1'
     if (-not (Test-Path -LiteralPath $legacyScript) -or (Get-FileSha256 -Path $legacyScript) -cne (Get-FileSha256 -Path $scriptPath)) {
         throw 'Legacy saved script is missing or differs from source.'
@@ -243,7 +244,7 @@ try {
     $evidence = [ordered]@{
         schema = 1
         package = $nupkg.Name
-        packageVersion = '5.1.1'
+        packageVersion = $version
         packageSha256 = Get-FileSha256 -Path $nupkg.FullName
         sourceSha256 = Get-FileSha256 -Path $scriptPath
         packageEntryCount = $entryNames.Count

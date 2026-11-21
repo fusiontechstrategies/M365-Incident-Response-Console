@@ -1,6 +1,6 @@
 <#PSScriptInfo
 
-.VERSION 5.1.1
+.VERSION 5.2.0
 
 .GUID 3d49185d-e43b-4ad0-8b87-78629275d00f
 
@@ -25,7 +25,7 @@
 .EXTERNALSCRIPTDEPENDENCIES
 
 .RELEASENOTES
-Adds PowerShell Gallery metadata and isolated package validation without changing tenant behavior.
+Adds offline case handoff assignment and acceptance, plus verified PowerShell Gallery packaging.
 
 .PRIVATEDATA
 
@@ -112,7 +112,7 @@ Adds PowerShell Gallery metadata and isolated package validation without changin
     .\M365-IR-Console.ps1 -OfflineSelfTest
 
 .NOTES
-    Version: 5.1.1
+    Version: 5.2.0
     Target runtime: PowerShell 7.6+
     Tested runtime: PowerShell 7.6.4
     License: MIT
@@ -152,7 +152,7 @@ Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'Continue'
 
-$script:IRVersion = [version]'5.1.1'
+$script:IRVersion = [version]'5.2.0'
 $script:IRMinimumPowerShell = [version]'7.6.0'
 $script:IRScriptPath = $PSCommandPath
 $script:IRModuleCatalog = [ordered]@{
