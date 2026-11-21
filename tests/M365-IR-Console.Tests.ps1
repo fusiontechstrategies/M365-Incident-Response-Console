@@ -907,6 +907,21 @@ Describe 'Offline investigator handoff' {
         $LASTEXITCODE | Should -Be 0
         $rendered | Should -Match '&lt;Review with owner&gt;'
         $rendered | Should -Match 'inbox-rule\.txt'
+        $null = & $powershell @common -CaseHandoff Assign -HandoffInvestigator Alex -HandoffRecipient Sam -HandoffDecision 'Confirm the collection gap'
+        $LASTEXITCODE | Should -Be 0
+        $reassigned = Get-IRCaseHandoff -CaseId $caseId
+        $reassigned.Status | Should -BeExactly 'Awaiting acceptance'
+        $reassigned.Current.Recipient | Should -BeExactly 'Sam'
+        $reassigned.Events.Count | Should -Be 3
+        $reassigned.Events[1].Event | Should -BeExactly 'Accepted'
+        $reassigned.Events[1].Investigator | Should -BeExactly 'Alex'
+        $reassigned.Events[1].AssignmentId | Should -BeExactly $assigned.Current.AssignmentId
+        $reassignedReport = (& $powershell @common -CaseHandoff Report) -join "`n"
+        $LASTEXITCODE | Should -Be 0
+        $reassignedReport | Should -Match 'Status Awaiting acceptance'
+        $reassignedReport | Should -Match "<code>$($reassigned.Current.AssignmentId)</code>"
+        $reassignedReport | Should -Match '<tr><td>Accepted</td><td>[^<]+</td><td>Alex</td><td>Alex</td>'
+        $reassignedReport | Should -Match '<tr><td>Assigned</td><td>[^<]+</td><td>Alex</td><td>Sam</td>'
         $script:IR.CasePath = $casePath
         $script:IR.CaseId = $caseId
         (Test-IREvidenceManifest).IsValid | Should -BeTrue
