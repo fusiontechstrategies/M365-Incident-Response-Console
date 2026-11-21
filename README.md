@@ -103,13 +103,13 @@ Automated validation never authenticates to a tenant. Live-service behavior rema
 
 ### Current module baselines
 
-These versions were verified against the PowerShell Gallery on November 16, 2026.
+These versions are validated against the PowerShell Gallery by the dependency smoke workflow.
 
 | Module family | Minimum version | Use |
 | --- | ---: | --- |
 | `ExchangeOnlineManagement` | `3.11.1` | Exchange Online and Microsoft Purview |
 | Microsoft Graph submodules | `2.41.2` | Authentication, users, identity, applications, reports, groups, and devices |
-| `MicrosoftTeams` | `8.0.0` | Optional Teams collection |
+| `MicrosoftTeams` | `8.1.0` | Optional Teams collection |
 | `Microsoft.Online.SharePoint.PowerShell` | `16.0.27814.12015` | Optional SharePoint collection |
 
 Use `-InstallMissingModules` only after reviewing your organization's module-management policy. Installation is limited to the current user and the PowerShell Gallery.

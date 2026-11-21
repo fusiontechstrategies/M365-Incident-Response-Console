@@ -212,7 +212,7 @@ $script:IRModuleCatalog = [ordered]@{
         Purpose = 'Intune managed-device removal'
     }
     MicrosoftTeams = [ordered]@{
-        MinimumVersion = [version]'8.0.0'
+        MinimumVersion = [version]'8.1.0'
         Optional = $true
         Purpose = 'Teams membership and channel inventory'
     }
