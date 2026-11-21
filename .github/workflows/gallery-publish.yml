@@ -1,0 +1,115 @@
+name: Publish signed script to PowerShell Gallery
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag
+        required: true
+        type: string
+      source_commit:
+        description: Exact reviewed main commit
+        required: true
+        type: string
+      script_sha256:
+        description: SHA-256 of the approved signed script
+        required: true
+        type: string
+      package_sha256:
+        description: SHA-256 of the approved deterministic package
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: powershell-gallery
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' && github.repository == 'fusiontechstrategies/M365-Incident-Response-Console'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    environment: powershell-gallery
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      SOURCE_COMMIT: ${{ inputs.source_commit }}
+      SCRIPT_SHA256: ${{ inputs.script_sha256 }}
+      PACKAGE_SHA256: ${{ inputs.package_sha256 }}
+      WORKFLOW_COMMIT: ${{ github.workflow_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.workflow_sha }}
+          fetch-depth: 0
+      - name: Verify the approved GitHub release and signed package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RELEASE_TAG -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$' -or $env:SOURCE_COMMIT -cnotmatch '^[0-9a-f]{40}$' -or
+              $env:SCRIPT_SHA256 -notmatch '^[0-9a-f]{64}$' -or $env:PACKAGE_SHA256 -notmatch '^[0-9a-f]{64}$') {
+              throw 'Invalid release identity or digest.'
+          }
+          $head = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:WORKFLOW_COMMIT) { throw 'Unexpected workflow checkout.' }
+          git merge-base --is-ancestor $env:SOURCE_COMMIT $head
+          if ($LASTEXITCODE -ne 0) { throw 'Release source must be in the reviewed main history.' }
+          $repo = 'repos/fusiontechstrategies/M365-Incident-Response-Console'
+          $tag = gh api --hostname github.com "$repo/git/ref/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $tag.object.type -ne 'commit' -or $tag.object.sha -cne $env:SOURCE_COMMIT) {
+              throw 'The GitHub release tag does not match the verified source.'
+          }
+          $proof = gh api --hostname github.com "$repo/git/commits/$env:SOURCE_COMMIT" --jq '.verification.verified'
+          if ($LASTEXITCODE -ne 0 -or $proof -cne 'true') { throw 'Expected a verified source commit.' }
+          $release = gh api --hostname github.com "$repo/releases/tags/$env:RELEASE_TAG" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $release.draft -or $release.prerelease -or !$release.published_at) {
+              throw 'Expected a published stable GitHub release.'
+          }
+          $version = $env:RELEASE_TAG.Substring(1)
+          $name = "M365-IR-Console.$version.nupkg"
+          $dir = Join-Path $env:RUNNER_TEMP 'gallery-verified'
+          $null = New-Item -ItemType Directory -Path $dir
+          gh release download $env:RELEASE_TAG -R github.com/fusiontechstrategies/M365-Incident-Response-Console --pattern M365-IR-Console.ps1 --pattern $name --dir $dir
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download the exact release assets.' }
+          $script = Join-Path $dir 'M365-IR-Console.ps1'
+          $package = Join-Path $dir $name
+          if ((Get-FileHash -LiteralPath $script).Hash -ne $env:SCRIPT_SHA256 -or
+              (Get-FileHash -LiteralPath $package).Hash -ne $env:PACKAGE_SHA256) { throw 'Release bytes differ from the approved digests.' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $script
+          if ($signature.Status -ne 'Valid' -or !$signature.TimeStamperCertificate -or
+              $signature.SignerCertificate.Thumbprint -cne '44BB10D1C4ACB6B8A043BA136AE5442BEFD47131') {
+              throw 'Expected a valid timestamped Fusion Authenticode signature.'
+          }
+          $signedText = [IO.File]::ReadAllText($script) -replace "`r`n", "`n"
+          $unsignedPath = Join-Path $dir 'reviewed-source.ps1'
+          git cat-file blob "$($env:SOURCE_COMMIT):M365-IR-Console.ps1" > $unsignedPath
+          if ($LASTEXITCODE -ne 0) { throw 'Could not read the reviewed script from the release commit.' }
+          $unsignedText = [IO.File]::ReadAllText($unsignedPath) -replace "`r`n", "`n"
+          $unsignedFromPackage = ($signedText -split '(?m)^# SIG # Begin signature block$', 2)[0].TrimEnd("`n")
+          if ($unsignedFromPackage -cne $unsignedText.TrimEnd("`n")) { throw 'The signed script differs from reviewed source.' }
+          Install-PSResource -Name Microsoft.PowerShell.PSResourceGet -Version 1.2.0 -Repository PSGallery -Scope CurrentUser -TrustRepository -AcceptLicense -Quiet
+          Install-PSResource -Name PowerShellGet -Version 2.2.5 -Repository PSGallery -Scope CurrentUser -TrustRepository -AcceptLicense -Quiet
+          $rebuilt = Join-Path $dir 'rebuilt.nupkg'
+          $null = & ./scripts/New-DeterministicGalleryPackage.ps1 -ScriptPath $script -ExpectedVersion $version -OutputPath $rebuilt
+          if ((Get-FileHash -LiteralPath $rebuilt).Hash -ne $env:PACKAGE_SHA256) { throw 'Canonical package reconstruction changed the bytes.' }
+      - name: Publish the exact verified package
+        shell: pwsh
+        env:
+          PSGALLERY_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ([string]::IsNullOrWhiteSpace($env:PSGALLERY_API_KEY)) { throw 'The protected publishing credential is unavailable.' }
+          Import-Module Microsoft.PowerShell.PSResourceGet -RequiredVersion 1.2.0
+          $repository = Get-PSResourceRepository -Name PSGallery
+          if ($repository.Uri.AbsoluteUri.TrimEnd('/') -cne 'https://www.powershellgallery.com/api/v2') {
+              throw 'PSGallery does not resolve to the official publishing endpoint.'
+          }
+          $version = $env:RELEASE_TAG.Substring(1)
+          $package = Join-Path $env:RUNNER_TEMP "gallery-verified/M365-IR-Console.$version.nupkg"
+          if ((Get-FileHash -LiteralPath $package).Hash -ne $env:PACKAGE_SHA256) { throw 'The verified package changed before upload.' }
+          Publish-PSResource -NupkgPath $package -Repository PSGallery -ApiKey $env:PSGALLERY_API_KEY

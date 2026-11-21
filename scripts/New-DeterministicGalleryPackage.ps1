@@ -3,6 +3,7 @@
 [CmdletBinding()]
 param(
     [string]$ScriptPath = (Join-Path -Path $PSScriptRoot -ChildPath '..\M365-IR-Console.ps1'),
+    [version]$ExpectedVersion,
     [Parameter(Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string]$OutputPath
@@ -33,7 +34,9 @@ if (-not (Test-PSScriptFileInfo -Path $sourcePath)) {
 Import-Module PowerShellGet -RequiredVersion 2.2.5 -ErrorAction Stop
 $metadata = Test-ScriptFileInfo -Path $sourcePath
 
-if ($metadata.Name -cne 'M365-IR-Console' -or $metadata.Version.ToString() -cne '5.1.1') {
+$version = [version]$metadata.Version
+if ($metadata.Name -cne 'M365-IR-Console' -or $version.Build -lt 0 -or
+    $version.Revision -ge 0 -or ($ExpectedVersion -and $version -ne $ExpectedVersion)) {
     throw "Unexpected package identity: $($metadata.Name) $($metadata.Version)"
 }
 

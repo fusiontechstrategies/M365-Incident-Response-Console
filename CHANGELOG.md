@@ -2,6 +2,12 @@
 
 All notable project changes are documented here.
 
+## 5.2.0
+
+- Record and review offline investigator handoffs with a case-bound journal and HTML report.
+- Validate the Microsoft Teams 8.1.0 baseline.
+- Prepare the first Authenticode-signed PowerShell Gallery release.
+
 ## 5.1.1 | 2026-11-16
 
 ### Added
