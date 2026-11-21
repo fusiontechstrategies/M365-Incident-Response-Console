@@ -52,9 +52,37 @@ Use this one-page structure when an investigator hands a mailbox case to contain
 
 ## Next-shift acceptance
 
+- Recipient: Alex (operator-entered)
+- Accepted at: 13:05 UTC (synthetic)
+- First unresolved decision accepted: Confirm the inbox rule with its business owner.
+
+- [ ] Record acceptance and the first decision the receiving investigator is taking on.
 - [ ] Receiving investigator reviewed unavailable and partial collectors.
 - [ ] Receiving investigator can reproduce the current case disposition from the attached evidence.
 - [ ] Open decisions have an owner and deadline.
 - [ ] Any production change remains behind the console's Live-mode, `ShouldProcess`, exact-confirmation, and durable-logging gates.
 
 The paired [sanitized case summary](sanitized-case-summary.json) and [sanitized case report](sanitized-case-report.md) show the synthetic source material behind this handoff.
+
+## Record the handoff in the console
+
+Run the synthetic example from the repository checkout. It creates a dedicated case root under your temporary directory. For an existing case, set `$case` to its root and ID and start at the assignment.
+
+```powershell
+$root = Join-Path ([IO.Path]::GetTempPath()) ('M365-Handoff-Demo-' + [guid]::NewGuid().ToString('N'))
+. .\M365-IR-Console.ps1 -OutputRoot $root -NoAutoConnect -SkipPreflight
+$null = Initialize-IRCase -CaseId 'IR-DEMO-20260827' -Confirm:$false
+$null = New-IREvidenceManifest -Confirm:$false
+$case = @{ OutputRoot = $root; HandoffCaseId = 'IR-DEMO-20260827' }
+$assignment = & .\M365-IR-Console.ps1 @case -CaseHandoff Assign -HandoffInvestigator Jordan -HandoffRecipient Alex `
+    -HandoffDecision 'Confirm the inbox rule with its business owner.'
+
+# On the receiving investigator's session, use the ID in the assignment or report.
+& .\M365-IR-Console.ps1 @case -CaseHandoff Accept -HandoffInvestigator Alex `
+    -HandoffAssignmentId $assignment.Current.AssignmentId
+& .\M365-IR-Console.ps1 @case -CaseHandoff Report
+```
+
+The local handoff journal travels alongside the case in `<OutputRoot>/.handoffs/<CaseId>/events.json`. Include that file when transferring the case through your approved evidence channel. The original evidence manifest continues to cover the original case directory. Investigator names are operator-entered. Acceptance records responsibility for the decision. Live changes still require the console's existing approval checks.
+
+To correct a pending assignment, run `Assign` again with the corrected details and the pending `-HandoffAssignmentId`. The earlier assignment stays in the timeline, and the recipient accepts the replacement ID.

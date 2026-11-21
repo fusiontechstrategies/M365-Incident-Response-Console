@@ -80,6 +80,13 @@ Adds PowerShell Gallery metadata and isolated package validation without changin
 .PARAMETER OfflineSelfTest
     Run deterministic local regression tests and exit without authentication.
 
+.PARAMETER CaseHandoff
+    Assign, accept, inspect, or render a handoff for an existing local case.
+    These operations exit without connecting to a Microsoft 365 tenant.
+
+.PARAMETER HandoffCaseId
+    ID of an existing case directly under OutputRoot.
+
 .PARAMETER SkipPreflight
     Skip the startup preflight. The connection menu can run it later.
 
@@ -129,7 +136,16 @@ param(
     [switch]$SkipPreflight,
     [switch]$NoAutoConnect,
     [switch]$PreserveInheritedCasePermissions,
-    [switch]$UseDeviceAuthentication
+    [switch]$UseDeviceAuthentication,
+    [ValidateSet('Assign', 'Accept', 'Status', 'Report')]
+    [string]$CaseHandoff,
+    [string]$HandoffCaseId,
+    [string]$HandoffInvestigator,
+    [string]$HandoffRecipient,
+    [string]$HandoffDecision,
+    [string]$HandoffAssignmentId,
+    [string]$HandoffNote,
+    [string[]]$HandoffEvidence = @()
 )
 
 Set-StrictMode -Version 3.0
@@ -817,6 +833,240 @@ function Get-IRActionLogHash {
         PreviousHash = $PreviousHash
     }
     return Get-IRSha256Hex -Value ($payload | ConvertTo-Json -Depth 30 -Compress)
+}
+
+function Get-IRHandoffCase {
+    param([Parameter(Mandatory)][string]$CaseId)
+
+    if ($CaseId -cne (ConvertTo-IRSafeFileName -Value $CaseId)) {
+        throw 'Supply the exact case ID, without a path.'
+    }
+    $root = Get-Item -LiteralPath $script:IR.OutputRoot -Force
+    $case = Get-Item -LiteralPath (Join-Path $root.FullName $CaseId) -Force
+    $metadata = Get-Item -LiteralPath (Join-Path $case.FullName 'case_metadata.json') -Force
+    if (-not $root.PSIsContainer -or -not $case.PSIsContainer -or $case.Name -cne $CaseId -or
+        $metadata.PSIsContainer -or $metadata.Length -gt 64KB -or
+        @(@($root, $case, $metadata) | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count) {
+        throw 'The handoff requires a regular case folder and metadata file.'
+    }
+    $raw = [IO.File]::ReadAllText($metadata.FullName)
+    $record = $raw | ConvertFrom-Json -AsHashtable -DateKind String -Depth 8
+    if ($record.CaseId -cne $CaseId -or -not $record.CreatedUtc) {
+        throw 'Case metadata does not match the requested case.'
+    }
+    $store = Join-Path $root.FullName '.handoffs'
+    $directory = Join-Path $store $CaseId
+    foreach ($path in @($store, $directory)) {
+        $existing = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($existing -and (-not $existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
+            throw 'The handoff store cannot use links or regular files as directories.'
+        }
+    }
+    return @{
+        Id = $CaseId
+        Path = $case.FullName
+        Digest = Get-IRSha256Hex -Value $raw
+        Store = $store
+        Directory = $directory
+        Journal = Join-Path $directory 'events.json'
+    }
+}
+
+function Read-IRHandoffJournal {
+    param([Parameter(Mandatory)][hashtable]$Case)
+
+    try { $file = Get-Item -LiteralPath $Case.Journal -Force -ErrorAction Stop }
+    catch [System.Management.Automation.ItemNotFoundException] { return }
+    if ($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $file.Length -gt 4MB) {
+        throw 'Unexpected handoff journal file.'
+    }
+    $journal = Get-Content -LiteralPath $file.FullName -Raw -Encoding utf8 | ConvertFrom-Json -AsHashtable -DateKind String -Depth 12
+    if ($journal.Schema -cne 'm365-ir-case-handoff/v1' -or $journal.Events -isnot [array] -or
+        $journal.Events.Count -lt 1 -or $journal.Events.Count -gt 512) {
+        throw 'Invalid handoff journal schema or event count.'
+    }
+    $prior = '0' * 64
+    $pending = $null
+    foreach ($entry in $journal.Events) {
+        $payload = $entry.Payload
+        $recordedAt = [datetime]::MinValue
+        if ($payload -isnot [System.Collections.IDictionary] -or $payload.IdentitySource -cne 'Operator-entered' -or
+            $payload.AssignmentId -cnotmatch '^[a-f0-9]{32}$' -or $payload.Investigator -isnot [string] -or
+            $payload.Recipient -isnot [string] -or $payload.Decision -isnot [string] -or
+            [string]::IsNullOrWhiteSpace($payload.Investigator) -or [string]::IsNullOrWhiteSpace($payload.Recipient) -or
+            [string]::IsNullOrWhiteSpace($payload.Decision) -or $payload.EvidenceReferences -isnot [array] -or
+            -not [datetime]::TryParseExact($payload.TimestampUtc, 'o', [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind, [ref]$recordedAt) -or $recordedAt.Kind -ne 'Utc') {
+            throw 'Invalid handoff event fields.'
+        }
+        $digest = Get-IRSha256Hex -Value ($payload | ConvertTo-Json -Depth 8 -Compress)
+        if ($entry.Hash -cne $digest -or $payload.PreviousHash -cne $prior -or $payload.CaseDigest -cne $Case.Digest) {
+            throw 'Handoff journal integrity check failed.'
+        }
+        $priorAssignment = if ($pending) { $pending.AssignmentId } else { '' }
+        if ($payload.Event -ceq 'Assigned' -and $payload.ReplacesAssignmentId -ceq $priorAssignment) {
+            $pending = $payload
+        } elseif ($payload.Event -ceq 'Accepted' -and $pending -and
+            $payload.AssignmentId -ceq $pending.AssignmentId -and $payload.Investigator -ieq $pending.Recipient -and
+            $payload.Recipient -ceq $pending.Recipient -and $payload.Decision -ceq $pending.Decision -and
+            -not $payload.ReplacesAssignmentId) {
+            $pending = $null
+        } else {
+            throw 'Handoff journal has an invalid assignment or acceptance.'
+        }
+        $prior = $digest
+    }
+    return $journal.Events
+}
+
+function Get-IRCaseHandoff {
+    param([Parameter(Mandatory)][string]$CaseId)
+
+    $case = Get-IRHandoffCase -CaseId $CaseId
+    $entries = @(Read-IRHandoffJournal -Case $case)
+    $current = if ($entries.Count) { $entries[-1].Payload } else { $null }
+    $status = if (-not $current) { 'Unassigned' } elseif ($current.Event -ceq 'Assigned') { 'Awaiting acceptance' } else { 'Accepted' }
+    return [pscustomobject]@{
+        CaseId = $CaseId
+        Status = $status
+        Current = $current
+        Events = @($entries | ForEach-Object { $_.Payload })
+    }
+}
+
+function Set-IRCaseHandoff {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$CaseId,
+        [Parameter(Mandatory)][ValidateSet('Assign', 'Accept')][string]$Operation,
+        [Parameter(Mandatory)][string]$Investigator,
+        [string]$Recipient,
+        [string]$Decision,
+        [string]$AssignmentId,
+        [string]$Note,
+        [string[]]$Evidence = @()
+    )
+
+    $case = Get-IRHandoffCase -CaseId $CaseId
+    $Investigator = $Investigator.Trim()
+    $Recipient = $Recipient.Trim()
+    $Decision = $Decision.Trim()
+    if (-not $Investigator -or $Investigator.Length -gt 120 -or $Recipient.Length -gt 120 -or
+        $Decision.Length -gt 1000 -or $Note.Length -gt 2000 -or $Evidence.Count -gt 20 -or
+        "$Investigator$Recipient$Decision$Note" -match '\p{Cc}') {
+        throw 'Supply bounded investigator, decision, note, and evidence values without control characters.'
+    }
+    if ($Operation -eq 'Assign' -and (-not $Recipient -or -not $Decision -or
+        ($AssignmentId -and $AssignmentId -cnotmatch '^[a-f0-9]{32}$'))) {
+        throw 'Assignment requires a recipient and their first unresolved decision.'
+    }
+    if ($Operation -eq 'Accept' -and ($AssignmentId -cnotmatch '^[a-f0-9]{32}$' -or $Recipient -or $Decision)) {
+        throw 'Acceptance requires the exact assignment ID. The original recipient and decision are carried forward.'
+    }
+    $references = @(
+        foreach ($reference in $Evidence) {
+            $relative = $reference.Replace('\', '/')
+            if ($relative.Length -gt 240 -or $relative -match '^(?:/|$)|[:\p{Cc}]|(?:^|/)\.{1,2}(?:/|$)|//|/$') {
+                throw 'Evidence references must be relative file names within the case.'
+            }
+            $evidencePath = $case.Path
+            foreach ($component in $relative.Split('/')) {
+                $evidencePath = Join-Path $evidencePath $component
+                $item = Get-Item -LiteralPath $evidencePath -Force
+                if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                    throw 'Evidence references cannot pass through a symbolic link or junction.'
+                }
+            }
+            if ($item.PSIsContainer) { throw 'Evidence references must name files.' }
+            $relative
+        }
+    )
+    if (-not $PSCmdlet.ShouldProcess($CaseId, "$Operation offline case handoff")) { return }
+
+    foreach ($path in @($case.Store, $case.Directory)) {
+        if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+            $null = New-Item -ItemType Directory -Path $path -Force
+            $null = Protect-IRCaseDirectory -Path $path
+        }
+    }
+    $case = Get-IRHandoffCase -CaseId $CaseId
+    $lockPath = Join-Path $case.Directory 'writer.lock'
+    $lockItem = Get-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+    if ($lockItem -and ($lockItem.PSIsContainer -or ($lockItem.Attributes -band [IO.FileAttributes]::ReparsePoint))) {
+        throw 'Invalid handoff lock file.'
+    }
+    $lock = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+    try {
+        $events = @(Read-IRHandoffJournal -Case $case)
+        $last = if ($events.Count) { $events[-1].Payload } else { $null }
+        if ($events.Count -ge 512) { throw 'This case reached its handoff history limit.' }
+        $replaces = ''
+        if ($Operation -eq 'Assign') {
+            if ($last -and $last.Event -ceq 'Assigned') { $replaces = $last.AssignmentId }
+            if ($AssignmentId -cne $replaces) { throw 'Replacing a pending handoff requires its exact assignment ID.' }
+            $kind = 'Assigned'
+            $AssignmentId = [guid]::NewGuid().ToString('N')
+        } else {
+            if (-not $last -or $last.Event -cne 'Assigned' -or $last.AssignmentId -cne $AssignmentId -or
+                $last.Recipient -ine $Investigator) {
+                throw 'The recipient and assignment ID must match the pending handoff.'
+            }
+            $kind = 'Accepted'
+            $Recipient = $last.Recipient
+            $Decision = $last.Decision
+        }
+        $payload = [ordered]@{
+            Event = $kind
+            AssignmentId = $AssignmentId
+            ReplacesAssignmentId = $replaces
+            TimestampUtc = [datetime]::UtcNow.ToString('o')
+            Investigator = $Investigator
+            IdentitySource = 'Operator-entered'
+            Recipient = $Recipient
+            Decision = $Decision
+            Note = $Note
+            EvidenceReferences = $references
+            CaseDigest = $case.Digest
+            PreviousHash = if ($events.Count) { $events[-1].Hash } else { '0' * 64 }
+        }
+        $events += @{ Payload = $payload; Hash = Get-IRSha256Hex -Value ($payload | ConvertTo-Json -Depth 8 -Compress) }
+        $json = @{ Schema = 'm365-ir-case-handoff/v1'; Events = $events } | ConvertTo-Json -Depth 12 -Compress
+        $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+        if ($bytes.Length -gt 4MB) { throw 'This case reached its handoff journal size limit.' }
+        $temp = Join-Path $case.Directory ([guid]::NewGuid().ToString('N') + '.tmp')
+        try {
+            [IO.File]::Open($temp, 'CreateNew', 'Write', 'None').Dispose()
+            $null = Protect-IRCaseFile -Path $temp
+            $stream = [IO.File]::Open($temp, 'Open', 'Write', 'None')
+            try {
+                $stream.Write($bytes, 0, $bytes.Length)
+                $stream.Flush($true)
+            } finally { $stream.Dispose() }
+            [IO.File]::Move($temp, $case.Journal, $true)
+        } finally {
+            if ([IO.File]::Exists($temp)) { [IO.File]::Delete($temp) }
+        }
+    } finally { $lock.Dispose() }
+    return Get-IRCaseHandoff -CaseId $CaseId
+}
+
+function ConvertTo-IRHandoffHtml {
+    param([Parameter(Mandatory)][psobject]$Handoff)
+
+    '<h2>Investigator handoff</h2>'
+    '<p>Case {0}. Status {1}. Investigator names are operator-entered. Acceptance records investigation ownership.</p>' -f
+        (ConvertTo-IRHtml $Handoff.CaseId), (ConvertTo-IRHtml $Handoff.Status)
+    if ($Handoff.Current) {
+        '<p>Current assignment ID <code>{0}</code></p>' -f (ConvertTo-IRHtml $Handoff.Current.AssignmentId)
+    }
+    '<table><thead><tr><th>Event</th><th>Time (UTC)</th><th>Recorded by</th><th>Recipient</th><th>First unresolved decision</th><th>Note</th><th>Case evidence references</th></tr></thead><tbody>'
+    foreach ($handoffEvent in $Handoff.Events) {
+        '<tr><td>{0}</td><td>{1}</td><td>{2}</td><td>{3}</td><td>{4}</td><td>{5}</td><td>{6}</td></tr>' -f
+            (ConvertTo-IRHtml $handoffEvent.Event), (ConvertTo-IRHtml $handoffEvent.TimestampUtc), (ConvertTo-IRHtml $handoffEvent.Investigator),
+            (ConvertTo-IRHtml $handoffEvent.Recipient), (ConvertTo-IRHtml $handoffEvent.Decision), (ConvertTo-IRHtml $handoffEvent.Note),
+            (ConvertTo-IRHtml ($handoffEvent.EvidenceReferences -join ', '))
+    }
+    '</tbody></table>'
 }
 
 function Add-IRActionLog {
@@ -5033,6 +5283,15 @@ function New-IRCaseReport {
         (ConvertTo-IRHtml $actionLogChain.FinalHash)))
     $null = $builder.AppendLine('<p><small>Heuristic findings are leads for analyst validation, not determinations of compromise. Service retention, licensing, permissions, and query ceilings can limit completeness.</small></p>')
 
+    try {
+        $handoff = Get-IRCaseHandoff -CaseId $script:IR.CaseId
+        if ($handoff.Events.Count) {
+            $null = $builder.AppendLine((ConvertTo-IRHandoffHtml -Handoff $handoff) -join "`n")
+        }
+    } catch {
+        $null = $builder.AppendLine('<p>Handoff history could not be verified. Use the offline handoff command to inspect it.</p>')
+    }
+
     $null = $builder.AppendLine('<h2>Collection status</h2><table><thead><tr><th>Component</th><th>Status</th><th>Duration (s)</th><th>Error / limitation</th></tr></thead><tbody>')
     foreach ($row in $statusRows) {
         $status = [string](Get-IRProperty -InputObject $row -Name 'Status')
@@ -6449,6 +6708,25 @@ if ($PreflightOnly) {
     if ($report.Overall -eq 'Fail') { throw 'One or more required preflight checks failed.' }
     return
 }
+if ($CaseHandoff) {
+    if (-not $HandoffCaseId) { throw 'Supply -HandoffCaseId for the offline handoff command.' }
+    if ($CaseHandoff -in 'Assign', 'Accept') {
+        if (-not $HandoffInvestigator) { throw 'Supply the operator-entered investigator name.' }
+        Set-IRCaseHandoff -CaseId $HandoffCaseId -Operation $CaseHandoff -Investigator $HandoffInvestigator -Recipient $HandoffRecipient -Decision $HandoffDecision -AssignmentId $HandoffAssignmentId -Note $HandoffNote -Evidence $HandoffEvidence
+    } else {
+        $handoff = Get-IRCaseHandoff -CaseId $HandoffCaseId
+        if ($CaseHandoff -eq 'Report') {
+            '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>M365 case handoff</title></head><body>'
+            ConvertTo-IRHandoffHtml -Handoff $handoff
+            '</body></html>'
+        } else { $handoff }
+    }
+    return
+}
 if ($script:IR.Interactive) {
+    if ($HandoffCaseId -or $HandoffInvestigator -or $HandoffRecipient -or $HandoffDecision -or
+        $HandoffAssignmentId -or $HandoffNote -or $HandoffEvidence.Count) {
+        throw 'Handoff arguments require -CaseHandoff.'
+    }
     Start-IRInteractiveConsole
 }
